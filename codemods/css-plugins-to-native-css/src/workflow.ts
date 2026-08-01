@@ -121,7 +121,23 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
 
   const edits: Edit[] = [];
   const editedRanges: Range[] = [];
-  const configObjects: SgNode<Js>[] = [];
+
+  // Per-config plan of properties to add once removals are known.
+  interface ConfigPlan {
+    config: SgNode<Js>;
+    needsExperimentsCss: boolean;
+    outputProps: { name: string; valueText: string }[];
+  }
+  const configPlans = new Map<number, ConfigPlan>();
+  const planFor = (config: SgNode<Js>): ConfigPlan => {
+    const key = config.range().start.index;
+    let plan = configPlans.get(key);
+    if (!plan) {
+      plan = { config, needsExperimentsCss: false, outputProps: [] };
+      configPlans.set(key, plan);
+    }
+    return plan;
+  };
 
   const removeText = (range: Range): void => {
     edits.push({ startPos: range.start, endPos: range.end, insertedText: "" });
@@ -144,12 +160,22 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     group.removed.add(node.range().start.index);
   };
 
-  const finalizeRemovals = (): void => {
+  const finalizeRemovals = (keepBracesOpenFor: Set<number>): void => {
     for (const { parent, removed } of pendingRemovals.values()) {
       const children = namedChildren(parent);
       if (children.every((child) => removed.has(child.range().start.index))) {
-        edits.push(parent.replace(parent.kind() === "array" ? "[]" : "{}"));
-        editedRanges.push(rangeOf(parent));
+        if (keepBracesOpenFor.has(parent.range().start.index) && children.length) {
+          // New properties will be inserted after "{" — clear the content only.
+          const first = children[0].range().start.index;
+          const lineStart = source.lastIndexOf("\n", first - 1) + 1;
+          removeText({
+            start: lineStart > parent.range().start.index ? lineStart : first,
+            end: parent.range().end.index - 1,
+          });
+        } else {
+          edits.push(parent.replace(parent.kind() === "array" ? "[]" : "{}"));
+          editedRanges.push(rangeOf(parent));
+        }
         continue;
       }
       // Delete each contiguous run of removed children up to the next kept
@@ -287,7 +313,7 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
       // A surviving rule that matches `.css` turns the "auto" default off.
       if (!ruleMatchesCssFiles(swap.ruleObject)) continue;
       const config = findConfigForRule(swap.pair);
-      if (config) configObjects.push(config);
+      if (config) planFor(config).needsExperimentsCss = true;
     }
   }
 
@@ -302,6 +328,28 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
       return constructorNode !== null && pluginNames.has(constructorNode.text());
     });
     if (!removed.length) continue;
+    // Only `filename`/`chunkFilename` have native counterparts; the rest of the
+    // plugin options (ignoreOrder, insert, attributes, linkType, runtime) don't.
+    const optionToOutput = new Map([
+      ["filename", "cssFilename"],
+      ["chunkFilename", "cssChunkFilename"],
+    ]);
+    const configObject = pair.parent();
+    for (const element of removed) {
+      if (!configObject || configObject.kind() !== "object") break;
+      const argumentsNode = element.field("arguments");
+      const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
+      if (!optionsObject || optionsObject.kind() !== "object") continue;
+      const plan = planFor(configObject);
+      for (const optionPair of pairsOf(optionsObject)) {
+        const mapped = optionToOutput.get(keyName(optionPair) ?? "");
+        const optionValue = optionPair.field("value");
+        if (!mapped || !optionValue) continue;
+        if (!plan.outputProps.some((prop) => prop.name === mapped)) {
+          plan.outputProps.push({ name: mapped, valueText: optionValue.text() });
+        }
+      }
+    }
     if (removed.length === elements.length) {
       markForRemoval(pair);
     } else {
@@ -309,7 +357,59 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     }
   }
 
-  finalizeRemovals();
+  // Decide which configs receive new top-level properties before removals are
+  // finalized — a fully-emptied config keeps its braces open for them.
+  interface InsertAction {
+    target: SgNode<Js>;
+    buildProperties: (indent: string, indentUnit: string) => string[];
+  }
+  const insertActions: InsertAction[] = [];
+  const topInsertTargets = new Set<number>();
+
+  for (const plan of configPlans.values()) {
+    const topProperties: ((indent: string, unit: string) => string)[] = [];
+    const experimentsValue = findPair(plan.config, "experiments")?.field("value");
+    if (plan.needsExperimentsCss) {
+      if (experimentsValue && experimentsValue.kind() === "object") {
+        if (!findPair(experimentsValue, "css")) {
+          insertActions.push({ target: experimentsValue, buildProperties: () => ["css: true"] });
+        }
+      } else if (!experimentsValue) {
+        topProperties.push((indent, unit) =>
+          indent || unit
+            ? `experiments: {\n${indent}${unit}css: true,\n${indent}}`
+            : "experiments: { css: true }",
+        );
+      }
+    }
+    if (plan.outputProps.length) {
+      const outputValue = findPair(plan.config, "output")?.field("value");
+      const propTexts = plan.outputProps.map((prop) => `${prop.name}: ${prop.valueText}`);
+      if (outputValue && outputValue.kind() === "object") {
+        const missing = plan.outputProps
+          .filter((prop) => !findPair(outputValue, prop.name))
+          .map((prop) => `${prop.name}: ${prop.valueText}`);
+        if (missing.length) {
+          insertActions.push({ target: outputValue, buildProperties: () => missing });
+        }
+      } else if (!outputValue) {
+        topProperties.push((indent, unit) =>
+          indent || unit
+            ? `output: {\n${propTexts.map((text) => `${indent}${unit}${text}`).join(",\n")},\n${indent}}`
+            : `output: { ${propTexts.join(", ")} }`,
+        );
+      }
+    }
+    if (topProperties.length) {
+      topInsertTargets.add(plan.config.range().start.index);
+      insertActions.push({
+        target: plan.config,
+        buildProperties: (indent, unit) => topProperties.map((build) => build(indent, unit)),
+      });
+    }
+  }
+
+  finalizeRemovals(topInsertTargets);
 
   if (!edits.length) return null;
 
@@ -335,45 +435,31 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     edits.push({ startPos: statementRange.start, endPos: end, insertedText: "" });
   }
 
-  // Insert a property right after an object's opening brace, matching its layout.
+  // Insert properties right after an object's opening brace, matching its layout.
   const insertIntoObject = (
     objectNode: SgNode<Js>,
-    buildProperty: (indent: string, indentUnit: string) => string,
+    buildProperties: (indent: string, indentUnit: string) => string[],
   ): void => {
-    const range = rangeOf(objectNode);
-    const insertAt = range.start + 1;
+    const insertAt = objectNode.range().start.index + 1;
     const properties = namedChildren(objectNode);
     const multiline = objectNode.text().includes("\n") && properties.length > 0;
     let insertedText: string;
     if (multiline) {
       const indent = lineIndent(source, properties[0].range().start.index);
       const indentUnit = indent.includes("\t") ? "\t" : indent || "  ";
-      insertedText = `\n${indent}${buildProperty(indent, indentUnit)},`;
+      insertedText = buildProperties(indent, indentUnit)
+        .map((property) => `\n${indent}${property},`)
+        .join("");
     } else if (properties.length) {
-      insertedText = ` ${buildProperty("", "")},`;
+      insertedText = ` ${buildProperties("", "").join(", ")},`;
     } else {
-      insertedText = ` ${buildProperty("", "")} `;
+      insertedText = ` ${buildProperties("", "").join(", ")} `;
     }
     edits.push({ startPos: insertAt, endPos: insertAt, insertedText });
   };
 
-  const seenConfigs = new Set<number>();
-  for (const config of configObjects) {
-    const start = config.range().start.index;
-    if (seenConfigs.has(start)) continue;
-    seenConfigs.add(start);
-    const experimentsValue = findPair(config, "experiments")?.field("value");
-    if (experimentsValue) {
-      if (experimentsValue.kind() !== "object") continue;
-      if (findPair(experimentsValue, "css")) continue;
-      insertIntoObject(experimentsValue, () => "css: true");
-    } else {
-      insertIntoObject(config, (indent, indentUnit) =>
-        indent || indentUnit
-          ? `experiments: {\n${indent}${indentUnit}css: true,\n${indent}}`
-          : "experiments: { css: true }",
-      );
-    }
+  for (const action of insertActions) {
+    insertIntoObject(action.target, action.buildProperties);
   }
 
   return rootNode.commitEdits(edits);

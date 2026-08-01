@@ -20,7 +20,7 @@ module.exports = {
     ],
   },
   plugins: [
-    new MiniCssExtractPlugin({ filename: "[name].css" }),
+    new MiniCssExtractPlugin({ filename: "static/[name].css", chunkFilename: "static/[id].css" }),
     new DefinePlugin({ DEBUG: "false" }),
   ],
 };

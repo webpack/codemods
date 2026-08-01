@@ -4,6 +4,8 @@ const { DefinePlugin } = require("webpack");
 module.exports = {
   entry: "./src/index.js",
   output: {
+    cssFilename: "static/[name].css",
+    cssChunkFilename: "static/[id].css",
     path: path.resolve(__dirname, "dist"),
   },
   module: {
