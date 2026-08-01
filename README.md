@@ -16,6 +16,12 @@ Run a codemod on your project with the [Codemod CLI](https://docs.codemod.com/cl
 npx codemod@latest run @webpack/<codemod-name>
 ```
 
+## Codemods
+
+| Codemod                                                                        | Description                                                                                                    |
+| ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| [`css-plugins-to-native-css`](codemods/css-plugins-to-native-css)               | Migrate `mini-css-extract-plugin` and `style-loader`/`css-loader` rules to webpack's native CSS support (`experiments.css`). |
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for how to add a new codemod or improve an existing one.

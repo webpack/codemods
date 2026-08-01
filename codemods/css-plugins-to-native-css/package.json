@@ -1,0 +1,22 @@
+{
+  "name": "@webpack/css-plugins-to-native-css",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Migrate mini-css-extract-plugin and style-loader/css-loader rules to webpack's native CSS support (experiments.css).",
+  "type": "module",
+  "scripts": {
+    "test": "npx codemod jssg test -l typescript ./src/workflow.ts ./"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webpack/codemods.git",
+    "directory": "codemods/css-plugins-to-native-css",
+    "bugs": "https://github.com/webpack/codemods/issues"
+  },
+  "author": "bjohansebas (Sebastian Beltran)",
+  "license": "MIT",
+  "homepage": "https://github.com/webpack/codemods/blob/main/codemods/css-plugins-to-native-css/README.md",
+  "devDependencies": {
+    "@codemod.com/jssg-types": "^1.6.2"
+  }
+}

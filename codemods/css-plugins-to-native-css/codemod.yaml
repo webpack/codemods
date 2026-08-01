@@ -1,0 +1,23 @@
+schema_version: "1.0"
+name: "@webpack/css-plugins-to-native-css"
+version: "1.0.0"
+description: Migrate mini-css-extract-plugin and style-loader/css-loader rules to webpack's native CSS support (experiments.css)
+author: bjohansebas (Sebastian Beltran)
+license: MIT
+workflow: workflow.yaml
+repository: "https://github.com/webpack/codemods/tree/HEAD/codemods/css-plugins-to-native-css"
+category: migration
+
+targets:
+  languages:
+    - javascript
+    - typescript
+
+keywords:
+  - transformation
+  - migration
+  - webpack
+
+registry:
+  access: public
+  visibility: public
