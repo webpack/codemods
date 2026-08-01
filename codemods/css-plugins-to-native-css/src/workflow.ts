@@ -109,18 +109,60 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     editedRanges.push(range);
   };
 
-  // Removal range for one element of a comma-separated list (array/object).
-  const listItemRemovalRange = (node: SgNode<Js>): Range => {
+  // Removals of comma-separated list items are grouped per parent container so
+  // sibling removals in the same object/array never produce overlapping ranges.
+  const pendingRemovals = new Map<number, { parent: SgNode<Js>; removed: Set<number> }>();
+
+  const markForRemoval = (node: SgNode<Js>): void => {
     const parent = node.parent();
-    const range = rangeOf(node);
-    if (!parent) return range;
-    const siblings = namedChildren(parent);
-    const index = siblings.findIndex((sibling) => sibling.range().start.index === range.start);
-    const next = siblings[index + 1];
-    if (next) return { start: range.start, end: next.range().start.index };
-    const previous = siblings[index - 1];
-    if (previous) return { start: previous.range().end.index, end: range.end };
-    return range;
+    if (!parent) return;
+    const key = parent.range().start.index;
+    let group = pendingRemovals.get(key);
+    if (!group) {
+      group = { parent, removed: new Set() };
+      pendingRemovals.set(key, group);
+    }
+    group.removed.add(node.range().start.index);
+  };
+
+  const finalizeRemovals = (): void => {
+    for (const { parent, removed } of pendingRemovals.values()) {
+      const children = namedChildren(parent);
+      if (children.every((child) => removed.has(child.range().start.index))) {
+        edits.push(parent.replace(parent.kind() === "array" ? "[]" : "{}"));
+        editedRanges.push(rangeOf(parent));
+        continue;
+      }
+      // Delete each contiguous run of removed children up to the next kept
+      // sibling, or back to the previous kept one for a trailing run.
+      let index = 0;
+      while (index < children.length) {
+        if (!removed.has(children[index].range().start.index)) {
+          index += 1;
+          continue;
+        }
+        let runEnd = index;
+        while (
+          runEnd + 1 < children.length &&
+          removed.has(children[runEnd + 1].range().start.index)
+        ) {
+          runEnd += 1;
+        }
+        const next = children[runEnd + 1];
+        if (next) {
+          removeText({
+            start: children[index].range().start.index,
+            end: next.range().start.index,
+          });
+        } else {
+          removeText({
+            start: children[index - 1].range().end.index,
+            end: children[runEnd].range().end.index,
+          });
+        }
+        index = runEnd + 1;
+      }
+    }
   };
 
   // The enclosing webpack config object: nearest ancestor holding a `module` pair.
@@ -136,6 +178,17 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     return null;
   };
 
+  // Rules holding only `test` + `use` can be dropped outright: with no user rule
+  // matching `.css`, `experiments.css: "auto"` enables native CSS by itself.
+  // Rules with extra conditions must stay, which disables the "auto" default —
+  // only those configs need an explicit `experiments.css: true`.
+  interface RulesArrayWork {
+    arrayNode: SgNode<Js>;
+    removedElements: SgNode<Js>[];
+    swappedUsePairs: SgNode<Js>[];
+  }
+  const rulesWork = new Map<number, RulesArrayWork>();
+
   for (const pair of rootNode.findAll({ rule: { kind: "pair" } })) {
     if (keyName(pair) !== "use") continue;
     const value = pair.field("value");
@@ -146,10 +199,61 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     if (!ruleObject || ruleObject.kind() !== "object") continue;
     const testValue = findPair(ruleObject, "test")?.field("value");
     if (testValue && PREPROCESSOR_TEST.test(testValue.text())) continue;
-    edits.push(pair.replace('type: "css/auto"'));
-    editedRanges.push(rangeOf(pair));
-    const config = findConfigForRule(pair);
-    if (config) configObjects.push(config);
+    const arrayNode = ruleObject.parent();
+    const key = arrayNode ? arrayNode.range().start.index : rangeOf(pair).start;
+    let work = rulesWork.get(key);
+    if (!work && arrayNode) {
+      work = { arrayNode, removedElements: [], swappedUsePairs: [] };
+      rulesWork.set(key, work);
+    }
+    if (!work) continue;
+    const trivialRule = pairsOf(ruleObject).every((rulePair) => {
+      const name = keyName(rulePair);
+      return name === "test" || name === "use";
+    });
+    if (trivialRule && arrayNode && arrayNode.kind() === "array") {
+      work.removedElements.push(ruleObject);
+    } else {
+      work.swappedUsePairs.push(pair);
+    }
+  }
+
+  for (const work of rulesWork.values()) {
+    const allElements = namedChildren(work.arrayNode);
+    if (
+      work.removedElements.length === allElements.length &&
+      !work.swappedUsePairs.length
+    ) {
+      // The whole rules array goes away — cascade to `rules`/`module` when empty.
+      let removalTarget: SgNode<Js> = work.arrayNode;
+      const rulesPair = work.arrayNode.parent();
+      if (rulesPair && rulesPair.kind() === "pair") {
+        removalTarget = rulesPair;
+        const moduleObject = rulesPair.parent();
+        const modulePair = moduleObject ? moduleObject.parent() : null;
+        if (
+          moduleObject &&
+          moduleObject.kind() === "object" &&
+          pairsOf(moduleObject).length === 1 &&
+          modulePair &&
+          modulePair.kind() === "pair" &&
+          keyName(modulePair) === "module"
+        ) {
+          removalTarget = modulePair;
+        }
+      }
+      markForRemoval(removalTarget);
+      continue;
+    }
+    for (const element of work.removedElements) {
+      markForRemoval(element);
+    }
+    for (const pair of work.swappedUsePairs) {
+      edits.push(pair.replace('type: "css/auto"'));
+      editedRanges.push(rangeOf(pair));
+      const config = findConfigForRule(pair);
+      if (config) configObjects.push(config);
+    }
   }
 
   for (const pair of rootNode.findAll({ rule: { kind: "pair" } })) {
@@ -164,13 +268,13 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     });
     if (!removed.length) continue;
     if (removed.length === elements.length) {
-      removeText(listItemRemovalRange(pair));
+      markForRemoval(pair);
     } else {
-      for (const element of removed) removeText(listItemRemovalRange(element));
+      for (const element of removed) markForRemoval(element);
     }
-    const parent = pair.parent();
-    if (parent && parent.kind() === "object") configObjects.push(parent);
   }
+
+  finalizeRemovals();
 
   if (!edits.length) return null;
 
@@ -189,6 +293,10 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     let end = statementRange.end;
     if (source[end] === "\r") end += 1;
     if (source[end] === "\n") end += 1;
+    // At the top of the file also swallow the blank line that separated it.
+    while (statementRange.start === 0 && (source[end] === "\n" || source[end] === "\r")) {
+      end += 1;
+    }
     edits.push({ startPos: statementRange.start, endPos: end, insertedText: "" });
   }
 
