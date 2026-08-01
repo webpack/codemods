@@ -1,0 +1,38 @@
+{
+  "name": "webpack-codemods",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A collection of codemods to upgrade webpack configurations and APIs.",
+  "type": "module",
+  "scripts": {
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "npm run test --workspaces",
+    "type-check": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webpack/codemods.git"
+  },
+  "keywords": [
+    "automation",
+    "codemod",
+    "migrations",
+    "webpack"
+  ],
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/webpack/codemods/issues"
+  },
+  "homepage": "https://github.com/webpack/codemods#readme",
+  "devDependencies": {
+    "@eslint/js": "^9.33.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.33.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.39.0"
+  },
+  "workspaces": [
+    "./codemods/*"
+  ]
+}
