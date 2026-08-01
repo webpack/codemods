@@ -26,6 +26,7 @@
   },
   "homepage": "https://github.com/webpack/codemods#readme",
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@eslint/js": "^9.33.0",
     "@types/node": "^24.0.0",
     "eslint": "^9.33.0",
