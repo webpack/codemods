@@ -3,8 +3,6 @@ import type { Edit, SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 
 const PLUGIN_MODULE = "mini-css-extract-plugin";
 const REMOVABLE_LOADERS = new Set(["style-loader", "css-loader"]);
-// Rules whose `test` targets a preprocessor still need their loaders — skip them.
-const PREPROCESSOR_TEST = /s[ac]ss|less|styl/;
 
 interface Range {
   start: number;
@@ -84,20 +82,41 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     );
   };
 
-  const isRemovableLoaderValue = (node: SgNode<Js>): boolean => {
-    if (node.kind() === "string") return REMOVABLE_LOADERS.has(unquote(node.text()));
-    return isPluginLoaderExpression(node);
+  // Loader name behind a `use` entry: a plain string or `{ loader: "..." }`.
+  const loaderNameOf = (node: SgNode<Js>): string | null => {
+    if (node.kind() === "string") return unquote(node.text());
+    if (node.kind() !== "object") return null;
+    const loaderValue = findPair(node, "loader")?.field("value");
+    return loaderValue && loaderValue.kind() === "string" ? unquote(loaderValue.text()) : null;
   };
 
-  // A `use` array entry replaceable by native CSS: a known loader string,
-  // the plugin's `.loader`, or `{ loader: <one of those>, ... }`.
+  // A `use` entry replaceable by native CSS: a known loader string, the
+  // plugin's `.loader`, or `{ loader: <one of those>, ... }`.
   const isRemovableUseElement = (node: SgNode<Js>): boolean => {
-    if (isRemovableLoaderValue(node)) return true;
-    if (node.kind() !== "object") return false;
-    const loaderPair = findPair(node, "loader");
-    if (!loaderPair) return false;
-    const loaderValue = loaderPair.field("value");
-    return loaderValue ? isRemovableLoaderValue(loaderValue) : false;
+    if (isPluginLoaderExpression(node)) return true;
+    if (node.kind() === "object") {
+      const loaderValue = findPair(node, "loader")?.field("value");
+      if (loaderValue && isPluginLoaderExpression(loaderValue)) return true;
+    }
+    const name = loaderNameOf(node);
+    return name !== null && REMOVABLE_LOADERS.has(name);
+  };
+
+  // Whether the rule still claims plain `.css` resources after the transform —
+  // if so it disables the `experiments.css: "auto"` default, which then needs
+  // an explicit `true`. Unreadable conditions count as matching, to be safe.
+  const ruleMatchesCssFiles = (ruleObject: SgNode<Js>): boolean => {
+    const testValue = findPair(ruleObject, "test")?.field("value");
+    if (!testValue) return true;
+    if (testValue.kind() !== "regex") return true;
+    const literal = /^\/(.*)\/([a-z]*)$/s.exec(testValue.text());
+    if (!literal) return true;
+    try {
+      const regex = new RegExp(literal[1], literal[2]);
+      return regex.test("/file.css") || regex.test("/file.module.css");
+    } catch {
+      return true;
+    }
   };
 
   const edits: Edit[] = [];
@@ -182,10 +201,15 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
   // matching `.css`, `experiments.css: "auto"` enables native CSS by itself.
   // Rules with extra conditions must stay, which disables the "auto" default —
   // only those configs need an explicit `experiments.css: true`.
+  interface UseSwap {
+    pair: SgNode<Js>;
+    ruleObject: SgNode<Js>;
+    keptLoaders: SgNode<Js>[];
+  }
   interface RulesArrayWork {
     arrayNode: SgNode<Js>;
     removedElements: SgNode<Js>[];
-    swappedUsePairs: SgNode<Js>[];
+    swaps: UseSwap[];
   }
   const rulesWork = new Map<number, RulesArrayWork>();
 
@@ -194,16 +218,18 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     const value = pair.field("value");
     if (!value) continue;
     const elements = value.kind() === "array" ? namedChildren(value) : [value];
-    if (!elements.length || !elements.every(isRemovableUseElement)) continue;
+    if (!elements.length) continue;
+    const removable = elements.filter(isRemovableUseElement);
+    // Any other loader (preprocessors, custom ones) stays in front of native CSS.
+    const kept = elements.filter((element) => !isRemovableUseElement(element));
+    if (!removable.length) continue;
     const ruleObject = pair.parent();
     if (!ruleObject || ruleObject.kind() !== "object") continue;
-    const testValue = findPair(ruleObject, "test")?.field("value");
-    if (testValue && PREPROCESSOR_TEST.test(testValue.text())) continue;
     const arrayNode = ruleObject.parent();
     const key = arrayNode ? arrayNode.range().start.index : rangeOf(pair).start;
     let work = rulesWork.get(key);
     if (!work && arrayNode) {
-      work = { arrayNode, removedElements: [], swappedUsePairs: [] };
+      work = { arrayNode, removedElements: [], swaps: [] };
       rulesWork.set(key, work);
     }
     if (!work) continue;
@@ -211,19 +237,16 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
       const name = keyName(rulePair);
       return name === "test" || name === "use";
     });
-    if (trivialRule && arrayNode && arrayNode.kind() === "array") {
+    if (trivialRule && !kept.length && arrayNode && arrayNode.kind() === "array") {
       work.removedElements.push(ruleObject);
     } else {
-      work.swappedUsePairs.push(pair);
+      work.swaps.push({ pair, ruleObject, keptLoaders: kept });
     }
   }
 
   for (const work of rulesWork.values()) {
     const allElements = namedChildren(work.arrayNode);
-    if (
-      work.removedElements.length === allElements.length &&
-      !work.swappedUsePairs.length
-    ) {
+    if (work.removedElements.length === allElements.length && !work.swaps.length) {
       // The whole rules array goes away — cascade to `rules`/`module` when empty.
       let removalTarget: SgNode<Js> = work.arrayNode;
       const rulesPair = work.arrayNode.parent();
@@ -248,10 +271,22 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     for (const element of work.removedElements) {
       markForRemoval(element);
     }
-    for (const pair of work.swappedUsePairs) {
-      edits.push(pair.replace('type: "css/auto"'));
-      editedRanges.push(rangeOf(pair));
-      const config = findConfigForRule(pair);
+    for (const swap of work.swaps) {
+      if (swap.keptLoaders.length) {
+        // Preprocessor loaders stay in `use`; native CSS parses their output.
+        const keptTexts = swap.keptLoaders.map((loader) => loader.text());
+        const indent = lineIndent(source, swap.pair.range().start.index);
+        const separator = swap.ruleObject.text().includes("\n") ? `,\n${indent}` : ", ";
+        edits.push(
+          swap.pair.replace(`use: [${keptTexts.join(", ")}]${separator}type: "css/auto"`),
+        );
+      } else {
+        edits.push(swap.pair.replace('type: "css/auto"'));
+      }
+      editedRanges.push(rangeOf(swap.pair));
+      // A surviving rule that matches `.css` turns the "auto" default off.
+      if (!ruleMatchesCssFiles(swap.ruleObject)) continue;
+      const config = findConfigForRule(swap.pair);
       if (config) configObjects.push(config);
     }
   }

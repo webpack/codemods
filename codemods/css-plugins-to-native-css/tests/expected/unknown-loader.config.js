@@ -1,9 +1,12 @@
 module.exports = {
+  experiments: {
+    css: true,
+  },
   module: {
     rules: [
       {
-        test: /\.scss$/,
-        use: ["sass-loader"],
+        test: /\.css$/,
+        use: ["my-custom-loader"],
         type: "css/auto",
       },
     ],
