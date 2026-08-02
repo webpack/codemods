@@ -204,9 +204,7 @@ class HtmlMigration {
       else if (name === "plugins") pluginsPairs.push(pair);
     }
     this.transformRules(usePairs, loaderPairs);
-    if (this.pluginNames.size) {
-      for (const pair of pluginsPairs) this.transformPluginsPair(pair);
-    }
+    for (const pair of pluginsPairs) this.transformPluginsPair(pair);
     this.migrateHooks();
     this.planConfigInsertions();
     this.editor.finalizeRemovals();
@@ -459,7 +457,14 @@ class HtmlMigration {
     }
     if (element.kind() !== "new_expression") return null;
     const constructorNode = element.field("constructor");
-    return constructorNode && this.pluginNames.has(constructorNode.text()) ? element : null;
+    if (!constructorNode) return null;
+    if (this.pluginNames.has(constructorNode.text())) return element;
+    // `new (require("html-webpack-plugin"))(...)` without a binding.
+    const inner =
+      constructorNode.kind() === "parenthesized_expression"
+        ? (namedChildren(constructorNode)[0] ?? constructorNode)
+        : constructorNode;
+    return isRequireOf(inner, PLUGIN_MODULE) ? element : null;
   }
 
   private transformPluginsPair(pluginsPair: SgNode<Js>): void {
