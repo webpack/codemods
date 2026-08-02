@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/codemod-com/codemod/refs/heads/main/schemas/workflow.json
+
+version: "1"
+
+nodes:
+  - id: apply-transforms
+    name: Apply AST Transformations
+    type: automatic
+    runtime:
+      type: direct
+    steps:
+      - name: Migrate html-webpack-plugin to webpack's native HTML support (experiments.html)
+        js-ast-grep:
+          js_file: src/workflow.ts
+          base_path: .
+          include:
+            - "**/*.cjs"
+            - "**/*.js"
+            - "**/*.jsx"
+            - "**/*.mjs"
+            - "**/*.cts"
+            - "**/*.mts"
+            - "**/*.ts"
+            - "**/*.tsx"
+          exclude:
+            - "**/node_modules/**"
+          language: typescript
+      - name: Remove html-webpack-plugin from package.json
+        js-ast-grep:
+          js_file: src/remove-dependencies.ts
+          base_path: .
+          include:
+            - "**/package.json"
+          exclude:
+            - "**/node_modules/**"
+          language: json
