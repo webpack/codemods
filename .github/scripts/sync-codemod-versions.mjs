@@ -11,7 +11,10 @@ for (const entry of readdirSync(codemodsDir, { withFileTypes: true })) {
   if (!existsSync(packagePath) || !existsSync(manifestPath)) continue;
   const { version } = JSON.parse(readFileSync(packagePath, "utf8"));
   const manifest = readFileSync(manifestPath, "utf8");
-  const updated = manifest.replace(/^version: .*$/m, `version: "${version}"`);
+  const updated = manifest.replace(
+    /^version:\s*(['"]?)([^'"\n]+)\1\s*$/m,
+    `version: "${version}"`,
+  );
   if (updated !== manifest) {
     writeFileSync(manifestPath, updated);
     console.log(`${manifestPath} -> ${version}`);
