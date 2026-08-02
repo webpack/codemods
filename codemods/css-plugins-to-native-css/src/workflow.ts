@@ -3,10 +3,12 @@ import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import {
   ConfigEditor,
   type ModuleBinding,
+  cascadeRemovalTarget,
   collectModuleBindings,
   filterSuffixOf,
   findConfigObjectFor,
   findPair,
+  guardBranchesOf,
   keyName,
   lineIndent,
   loaderNameOf,
@@ -19,12 +21,14 @@ import {
 
 const PLUGIN_MODULE = "mini-css-extract-plugin";
 const REMOVABLE_LOADERS = new Set(["style-loader", "css-loader"]);
+const EXTRACT_LOADER_NAME = "MiniCssExtractPlugin.loader";
 // Plugin options with a native counterpart; the rest have none and are dropped.
 const PLUGIN_OPTION_TO_OUTPUT = new Map([
   ["filename", "cssFilename"],
   ["chunkFilename", "cssChunkFilename"],
 ]);
 const CSS_SAMPLE_FILES = ["/file.css", "/file.module.css"];
+const PLAIN_CSS_SAMPLE = ["/file.css"];
 // Options native CSS covers on its own; any other option is flagged when dropped.
 const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "sourceMap", "esModule"]);
 const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
@@ -50,9 +54,9 @@ interface RulesArrayWork {
   swaps: UseSwap[];
 }
 
-interface InsertAction {
-  target: SgNode<Js>;
-  buildProperties: (indent: string, indentUnit: string) => string[];
+interface PluginRemoval {
+  element: SgNode<Js>;
+  instantiation: SgNode<Js>;
 }
 
 class CssMigration {
@@ -61,7 +65,6 @@ class CssMigration {
   private readonly pluginNames: Set<string>;
 
   private readonly configPlans = new Map<number, ConfigPlan>();
-  private readonly insertActions: InsertAction[] = [];
 
   constructor(root: SgRoot<Js>) {
     this.editor = new ConfigEditor(root.root());
@@ -70,16 +73,20 @@ class CssMigration {
   }
 
   run(): string | null {
-    this.transformRules();
-    this.transformPlugins();
+    const usePairs: SgNode<Js>[] = [];
+    const pluginsPairs: SgNode<Js>[] = [];
+    for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
+      const name = keyName(pair);
+      if (name === "use") usePairs.push(pair);
+      else if (name === "plugins") pluginsPairs.push(pair);
+    }
+    this.transformRules(usePairs);
+    this.transformPlugins(pluginsPairs);
     this.planConfigInsertions();
     this.editor.finalizeRemovals();
     if (!this.editor.hasEdits) return null;
     for (const binding of this.pluginBindings) {
       this.editor.removeBindingIfUnused(binding);
-    }
-    for (const action of this.insertActions) {
-      this.editor.insertIntoObject(action.target, action.buildProperties);
     }
     return this.editor.commit();
   }
@@ -112,29 +119,24 @@ class CssMigration {
     if (!callee || callee.kind() !== "identifier" || callee.text() !== "require") return false;
     const argumentsNode = node.field("arguments");
     const args = argumentsNode ? namedChildren(argumentsNode) : [];
-    return args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === PLUGIN_MODULE;
+    return (
+      args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === PLUGIN_MODULE
+    );
   }
 
   // A `use` entry replaceable by native CSS, unwrapping dev/prod guards.
   private isRemovableUseElement(node: SgNode<Js>): boolean {
+    const branches = guardBranchesOf(node);
+    if (branches) {
+      return branches.length > 0 && branches.every((branch) => this.isRemovableUseElement(branch));
+    }
     if (this.isPluginLoaderExpression(node)) return true;
-    if (node.kind() === "binary_expression" && node.field("operator")?.text() === "&&") {
-      const right = node.field("right");
-      return right !== null && this.isRemovableUseElement(right);
-    }
-    if (node.kind() === "ternary_expression") {
-      const consequence = node.field("consequence");
-      const alternative = node.field("alternative");
-      return (
-        consequence !== null &&
-        alternative !== null &&
-        this.isRemovableUseElement(consequence) &&
-        this.isRemovableUseElement(alternative)
-      );
-    }
     if (node.kind() === "object") {
       const loaderValue = findPair(node, "loader")?.field("value");
-      if (loaderValue && this.isPluginLoaderExpression(loaderValue)) return true;
+      if (!loaderValue) return false;
+      if (this.isPluginLoaderExpression(loaderValue)) return true;
+      const name = loaderNameOf(loaderValue);
+      return name !== null && REMOVABLE_LOADERS.has(name);
     }
     const name = loaderNameOf(node);
     return name !== null && REMOVABLE_LOADERS.has(name);
@@ -143,26 +145,16 @@ class CssMigration {
   // Dropped options native CSS cannot replicate, qualified per loader;
   // `modules` counts only when the rule also matches plain `.css` files.
   private lostLoaderOptions(node: SgNode<Js>, ruleObject: SgNode<Js>): string[] {
-    if (node.kind() === "binary_expression") {
-      const right = node.field("right");
-      return right ? this.lostLoaderOptions(right, ruleObject) : [];
-    }
-    if (node.kind() === "ternary_expression") {
-      const consequence = node.field("consequence");
-      const alternative = node.field("alternative");
-      return [
-        ...(consequence ? this.lostLoaderOptions(consequence, ruleObject) : []),
-        ...(alternative ? this.lostLoaderOptions(alternative, ruleObject) : []),
-      ];
+    const branches = guardBranchesOf(node);
+    if (branches) {
+      return branches.flatMap((branch) => this.lostLoaderOptions(branch, ruleObject));
     }
     if (node.kind() !== "object") return [];
     const loaderValue = findPair(node, "loader")?.field("value");
     const isExtractLoader = Boolean(loaderValue && this.isPluginLoaderExpression(loaderValue));
-    const loaderName = isExtractLoader ? "MiniCssExtractPlugin.loader" : loaderNameOf(node);
+    const loaderName = isExtractLoader ? EXTRACT_LOADER_NAME : loaderNameOf(node);
     if (!loaderName) return [];
-    if (!isExtractLoader && loaderName !== "css-loader" && loaderName !== "style-loader") {
-      return [];
-    }
+    if (!isExtractLoader && !REMOVABLE_LOADERS.has(loaderName)) return [];
     const droppable =
       loaderName === "css-loader"
         ? DROPPABLE_CSS_LOADER_OPTIONS
@@ -175,7 +167,7 @@ class CssMigration {
     for (const optionPair of pairsOf(optionsValue)) {
       const name = keyName(optionPair);
       if (loaderName === "css-loader" && name === "modules") {
-        if (ruleMatchesFiles(ruleObject, ["/file.css"])) lost.push(`${loaderName}.${name}`);
+        if (ruleMatchesFiles(ruleObject, PLAIN_CSS_SAMPLE)) lost.push(`${loaderName}.${name}`);
       } else if (name === null || !droppable.has(name)) {
         lost.push(`${loaderName}.${name ?? "options"}`);
       }
@@ -185,31 +177,29 @@ class CssMigration {
 
   // The plugin instantiation behind a plugins element, unwrapping guards.
   private pluginInstantiationOf(element: SgNode<Js>): SgNode<Js> | null {
-    const candidates: (SgNode<Js> | null)[] = [element];
-    if (element.kind() === "binary_expression" && element.field("operator")?.text() === "&&") {
-      candidates.push(element.field("right"));
+    const branches = guardBranchesOf(element);
+    if (branches) {
+      for (const branch of branches) {
+        const found = this.pluginInstantiationOf(branch);
+        if (found) return found;
+      }
+      return null;
     }
-    if (element.kind() === "ternary_expression") {
-      candidates.push(element.field("consequence"), element.field("alternative"));
-    }
-    for (const candidate of candidates) {
-      if (!candidate || candidate.kind() !== "new_expression") continue;
-      const constructorNode = candidate.field("constructor");
-      if (constructorNode && this.pluginNames.has(constructorNode.text())) return candidate;
-    }
-    return null;
+    if (element.kind() !== "new_expression") return null;
+    const constructorNode = element.field("constructor");
+    return constructorNode && this.pluginNames.has(constructorNode.text()) ? element : null;
   }
 
   // ---------- module.rules ----------
 
   // Trivial rules are dropped (the `experiments.css: "auto"` default takes
   // over); surviving rules get `type: "css/auto"`.
-  private transformRules(): void {
-    const rulesWork = this.collectRulesWork();
+  private transformRules(usePairs: SgNode<Js>[]): void {
+    const rulesWork = this.collectRulesWork(usePairs);
     for (const work of rulesWork.values()) {
       const allElements = namedChildren(work.arrayNode);
       if (work.removedElements.length === allElements.length && !work.swaps.length) {
-        this.editor.markForRemoval(this.cascadeRemovalTarget(work.arrayNode));
+        this.editor.markForRemoval(cascadeRemovalTarget(work.arrayNode));
         continue;
       }
       for (const element of work.removedElements) {
@@ -221,19 +211,17 @@ class CssMigration {
     }
   }
 
-  private collectRulesWork(): Map<number, RulesArrayWork> {
+  private collectRulesWork(usePairs: SgNode<Js>[]): Map<number, RulesArrayWork> {
     const rulesWork = new Map<number, RulesArrayWork>();
-    for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
-      if (keyName(pair) !== "use") continue;
+    for (const pair of usePairs) {
       const originalValue = pair.field("value");
       if (!originalValue) continue;
       const value = unwrapFilterCall(originalValue);
       const elements = value.kind() === "array" ? namedChildren(value) : [value];
       if (!elements.length) continue;
-      const removable = elements.filter((element) => this.isRemovableUseElement(element));
       // Any other loader (preprocessors, custom ones) stays in front of native CSS.
       const kept = elements.filter((element) => !this.isRemovableUseElement(element));
-      if (!removable.length) continue;
+      if (kept.length === elements.length) continue;
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       const arrayNode = ruleObject.parent();
@@ -282,28 +270,6 @@ class CssMigration {
     return findConfigObjectFor(usePair) !== null;
   }
 
-  // Climb while the removal would leave an empty container behind, so a
-  // css-only `oneOf` → rule → `rules` → `module` chain collapses as one removal.
-  private cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
-    let target = node;
-    for (;;) {
-      const parent = target.parent();
-      if (!parent) return target;
-      if (parent.kind() === "pair") {
-        target = parent;
-        continue;
-      }
-      if (parent.kind() !== "object" && parent.kind() !== "array") return target;
-      const members = parent.kind() === "object" ? pairsOf(parent) : namedChildren(parent);
-      if (members.length !== 1) return target;
-      const grandparent = parent.parent();
-      if (!grandparent || (grandparent.kind() !== "pair" && grandparent.kind() !== "array")) {
-        return target;
-      }
-      target = parent;
-    }
-  }
-
   private replaceUsePair(swap: UseSwap): void {
     const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
     const multiline = swap.ruleObject.text().includes("\n");
@@ -316,10 +282,7 @@ class CssMigration {
     if (swap.keptLoaders.length) {
       // Guarded entries keep the original `.filter(...)` for their falsy branch.
       const keptTexts = swap.keptLoaders.map((loader) => loader.text());
-      const keepsGuard = swap.keptLoaders.some(
-        (loader) =>
-          loader.kind() === "binary_expression" || loader.kind() === "ternary_expression",
-      );
+      const keepsGuard = swap.keptLoaders.some((loader) => guardBranchesOf(loader) !== null);
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
       const separator = multiline ? `,\n${indent}` : ", ";
       this.editor.replace(
@@ -337,29 +300,33 @@ class CssMigration {
 
   // ---------- plugins ----------
 
-  private transformPlugins(): void {
-    for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
-      if (keyName(pair) !== "plugins") continue;
-      let value = pair.field("value");
-      if (value) value = unwrapFilterCall(value);
-      if (!value || value.kind() !== "array") continue;
+  private transformPlugins(pluginsPairs: SgNode<Js>[]): void {
+    for (const pair of pluginsPairs) {
+      const originalValue = pair.field("value");
+      if (!originalValue) continue;
+      const value = unwrapFilterCall(originalValue);
+      if (value.kind() !== "array") continue;
       const elements = namedChildren(value);
-      const removed = elements.filter((element) => this.pluginInstantiationOf(element) !== null);
+      const removed: PluginRemoval[] = [];
+      for (const element of elements) {
+        const instantiation = this.pluginInstantiationOf(element);
+        if (instantiation) removed.push({ element, instantiation });
+      }
       if (!removed.length) continue;
       this.collectPluginOptions(pair, removed);
       if (removed.length === elements.length) {
         this.editor.markForRemoval(pair);
       } else {
-        for (const element of removed) this.editor.markForRemoval(element);
+        for (const removal of removed) this.editor.markForRemoval(removal.element);
       }
     }
   }
 
-  private collectPluginOptions(pluginsPair: SgNode<Js>, removed: SgNode<Js>[]): void {
+  private collectPluginOptions(pluginsPair: SgNode<Js>, removed: PluginRemoval[]): void {
     const configObject = pluginsPair.parent();
     if (!configObject || configObject.kind() !== "object") return;
-    for (const element of removed) {
-      const argumentsNode = this.pluginInstantiationOf(element)?.field("arguments");
+    for (const removal of removed) {
+      const argumentsNode = removal.instantiation.field("arguments");
       const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
       if (!optionsObject || optionsObject.kind() !== "object") continue;
       const plan = this.planFor(configObject);
@@ -389,61 +356,43 @@ class CssMigration {
   private planConfigInsertions(): void {
     for (const plan of this.configPlans.values()) {
       const topProperties: ((indent: string, unit: string) => string)[] = [];
-      this.planExperimentsCss(plan, topProperties);
-      this.planOutputProps(plan, topProperties);
+      if (plan.needsExperimentsCss) {
+        this.planObjectProps(plan.config, "experiments", [{ name: "css", valueText: "true" }], topProperties);
+      }
+      if (plan.outputProps.length) {
+        this.planObjectProps(plan.config, "output", plan.outputProps, topProperties);
+      }
       if (topProperties.length) {
         // A fully-emptied config keeps its braces open for these properties.
         this.editor.keepBracesOpen(plan.config);
-        this.insertActions.push({
-          target: plan.config,
-          buildProperties: (indent, unit) => topProperties.map((build) => build(indent, unit)),
-        });
+        this.editor.insertIntoObject(plan.config, (indent, unit) =>
+          topProperties.map((build) => build(indent, unit)),
+        );
       }
     }
   }
 
-  private planExperimentsCss(
-    plan: ConfigPlan,
+  // Insert props into the config's `key` object, creating it when absent; an
+  // existing non-object value (e.g. a variable) is left alone.
+  private planObjectProps(
+    config: SgNode<Js>,
+    key: string,
+    props: { name: string; valueText: string }[],
     topProperties: ((indent: string, unit: string) => string)[],
   ): void {
-    if (!plan.needsExperimentsCss) return;
-    const experimentsValue = findPair(plan.config, "experiments")?.field("value");
-    if (experimentsValue && experimentsValue.kind() === "object") {
-      if (!findPair(experimentsValue, "css")) {
-        this.insertActions.push({
-          target: experimentsValue,
-          buildProperties: () => ["css: true"],
-        });
-      }
-    } else if (!experimentsValue) {
-      topProperties.push((indent, unit) =>
-        indent || unit
-          ? `experiments: {\n${indent}${unit}css: true,\n${indent}}`
-          : "experiments: { css: true }",
-      );
-    }
-  }
-
-  private planOutputProps(
-    plan: ConfigPlan,
-    topProperties: ((indent: string, unit: string) => string)[],
-  ): void {
-    if (!plan.outputProps.length) return;
-    const outputValue = findPair(plan.config, "output")?.field("value");
-    const propTexts = plan.outputProps.map((prop) => `${prop.name}: ${prop.valueText}`);
-    if (outputValue && outputValue.kind() === "object") {
-      const missing = plan.outputProps
-        .filter((prop) => !findPair(outputValue, prop.name))
+    const value = findPair(config, key)?.field("value");
+    if (value && value.kind() === "object") {
+      const missing = props
+        .filter((prop) => !findPair(value, prop.name))
         .map((prop) => `${prop.name}: ${prop.valueText}`);
-      if (missing.length) {
-        this.insertActions.push({ target: outputValue, buildProperties: () => missing });
-      }
-    } else if (!outputValue) {
-      topProperties.push((indent, unit) =>
-        indent || unit
-          ? `output: {\n${propTexts.map((text) => `${indent}${unit}${text}`).join(",\n")},\n${indent}}`
-          : `output: { ${propTexts.join(", ")} }`,
-      );
+      if (missing.length) this.editor.insertIntoObject(value, () => missing);
+    } else if (!value) {
+      topProperties.push((indent, unit) => {
+        const texts = props.map((prop) => `${prop.name}: ${prop.valueText}`);
+        return indent || unit
+          ? `${key}: {\n${texts.map((text) => `${indent}${unit}${text}`).join(",\n")},\n${indent}}`
+          : `${key}: { ${texts.join(", ")} }`;
+      });
     }
   }
 }

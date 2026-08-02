@@ -43,6 +43,43 @@ export function isInsideAny(range: Range, ranges: Range[]): boolean {
   return ranges.some((outer) => range.start >= outer.start && range.end <= outer.end);
 }
 
+// Effective branches behind a dev/prod guard (`cond && x`, `cond ? a : b`),
+// or null when the node is not a guard.
+export function guardBranchesOf(node: SgNode<Js>): SgNode<Js>[] | null {
+  if (node.kind() === "binary_expression" && node.field("operator")?.text() === "&&") {
+    const right = node.field("right");
+    return right ? [right] : [];
+  }
+  if (node.kind() === "ternary_expression") {
+    const branches = [node.field("consequence"), node.field("alternative")];
+    return branches.filter((branch): branch is SgNode<Js> => branch !== null);
+  }
+  return null;
+}
+
+// Climb while the removal would leave an empty container behind, so chains
+// like a css-only `oneOf` → rule → `rules` → `module` collapse as one removal.
+// Stops where a container keeps other members or is not a property/element.
+export function cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
+  let target = node;
+  for (;;) {
+    const parent = target.parent();
+    if (!parent) return target;
+    if (parent.kind() === "pair") {
+      target = parent;
+      continue;
+    }
+    if (parent.kind() !== "object" && parent.kind() !== "array") return target;
+    const members = parent.kind() === "object" ? pairsOf(parent) : namedChildren(parent);
+    if (members.length !== 1) return target;
+    const grandparent = parent.parent();
+    if (!grandparent || (grandparent.kind() !== "pair" && grandparent.kind() !== "array")) {
+      return target;
+    }
+    target = parent;
+  }
+}
+
 // `[ ... ].filter(<any predicate>)` — return the inner array literal.
 export function unwrapFilterCall(node: SgNode<Js>): SgNode<Js> {
   if (node.kind() !== "call_expression") return node;

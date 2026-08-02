@@ -88,6 +88,7 @@ export class ConfigEditor {
   >();
   // Fully-emptied objects that must keep their braces open for new properties.
   private readonly keepOpenTargets = new Set<number>();
+  private identifierNodes: SgNode<Js>[] | null = null;
 
   // Line ending of the source file; generated text must use it too.
   readonly eol: string;
@@ -103,9 +104,9 @@ export class ConfigEditor {
   }
 
   // Generated text may mix "\n" with source fragments that already carry the
-  // file's EOL — normalize first so the conversion never doubles a "\r".
+  // file's EOL — normalize both so the conversion never doubles a "\r".
   private toSourceEol(text: string): string {
-    return text.split("\r\n").join("\n").split("\n").join(this.eol);
+    return text.replace(/\r?\n/g, this.eol);
   }
 
   replace(node: SgNode<Js>, text: string): void {
@@ -176,9 +177,8 @@ export class ConfigEditor {
   // ranges. Call after finalizeRemovals so those ranges are complete.
   removeBindingIfUnused(binding: ModuleBinding): void {
     const statementRange = rangeOf(binding.statement);
-    const survivingReference = this.rootNode
-      .findAll({ rule: { kind: "identifier" } })
-      .some((identifier) => {
+    this.identifierNodes ??= this.rootNode.findAll({ rule: { kind: "identifier" } });
+    const survivingReference = this.identifierNodes.some((identifier) => {
         if (identifier.text() !== binding.name) return false;
         const range = rangeOf(identifier);
         if (range.start >= statementRange.start && range.end <= statementRange.end) return false;
