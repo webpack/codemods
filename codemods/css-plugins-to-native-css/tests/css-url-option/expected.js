@@ -2,7 +2,7 @@ module.exports = {
   experiments: {
     css: true,
   },
-  devtool: [{ type: "javascript", use: "source-map" }],
+  devtool: [{ type: "javascript", use: "source-map" }, { type: "css", use: false }],
   module: {
     rules: [
       {
