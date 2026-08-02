@@ -28,10 +28,10 @@
   "homepage": "https://github.com/webpack/codemods#readme",
   "devDependencies": {
     "@changesets/cli": "^2.31.1",
-    "@eslint/js": "^9.33.0",
-    "@types/node": "^24.0.0",
-    "eslint": "^9.33.0",
-    "typescript": "^5.9.2",
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.2",
+    "eslint": "^10.8.0",
+    "typescript": "^7.0.2",
     "typescript-eslint": "^8.39.0"
   },
   "workspaces": [
