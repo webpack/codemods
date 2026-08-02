@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Version / tag
+    runs-on: ubuntu-latest
+    if: github.repository == 'webpack/codemods'
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      publishedPackages: ${{ steps.changesets.outputs.publishedPackages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build --if-present
+
+      - name: Run Changesets
+        id: changesets
+        uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        with:
+          publish: npx changeset tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish ${{ matrix.package.name }}
+    needs: release
+    if: needs.release.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.release.outputs.publishedPackages) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve package directory
+        id: dir
+        env:
+          PKG_NAME: ${{ matrix.package.name }}
+        run: |
+          set -euo pipefail
+          DIR=$(npm query ".workspace" | node -e '
+            const chunks = [];
+            process.stdin
+              .on("data", (c) => chunks.push(c))
+              .on("end", () => {
+                const target = process.env.PKG_NAME;
+                const hit = JSON.parse(chunks.join("")).find((p) => p.name === target);
+                if (!hit) {
+                  console.error(`No workspace package named ${target}`);
+                  process.exit(1);
+                }
+                console.log(hit.location || ".");
+              });
+          ')
+          echo "path=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Publishing $PKG_NAME from $DIR"
+
+      - name: Publish to Codemod registry
+        uses: codemod/publish-action@dd6c8dbc5ceb1a6146feba41481d88b43da50024 # v1
+        with:
+          path: ${{ steps.dir.outputs.path }}
