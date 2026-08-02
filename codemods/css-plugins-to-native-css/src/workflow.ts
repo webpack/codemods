@@ -12,7 +12,6 @@ import {
   loaderNameOf,
   namedChildren,
   pairsOf,
-  requireCallSource,
   ruleMatchesFiles,
   unquote,
   unwrapFilterCall,
@@ -103,7 +102,10 @@ class CssMigration {
     }
     if (!objectPart) return false;
     if (objectPart.kind() === "identifier") return this.pluginNames.has(objectPart.text());
-    return requireCallSource(objectPart) === PLUGIN_MODULE;
+    return (
+      objectPart.kind() === "call_expression" &&
+      /^require\(\s*["'`]mini-css-extract-plugin["'`]\s*\)$/.test(objectPart.text())
+    );
   }
 
   // A `use` entry replaceable by native CSS, unwrapping dev/prod guards.

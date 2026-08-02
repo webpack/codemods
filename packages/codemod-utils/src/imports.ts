@@ -1,7 +1,8 @@
 import type Js from "@codemod.com/jssg-types/langs/javascript";
 import type { SgNode } from "@codemod.com/jssg-types/main";
+import { getAllImports } from "@jssg/utils/javascript/imports";
 
-import { namedChildren, unquote } from "./ast";
+import { namedChildren } from "./ast";
 
 // A top-level `require`/`import` binding of a given module.
 export interface ModuleBinding {
@@ -9,55 +10,35 @@ export interface ModuleBinding {
   statement: SgNode<Js>;
 }
 
-export function unwrapParens(node: SgNode<Js>): SgNode<Js> {
-  let current = node;
-  while (current.kind() === "parenthesized_expression") {
-    const inner = namedChildren(current)[0];
-    if (!inner) return current;
-    current = inner;
+// The whole removable statement behind a binding identifier: its import
+// statement, or its variable statement when it declares nothing else.
+function bindingStatementOf(identifier: SgNode<Js>): SgNode<Js> | null {
+  let current = identifier.parent();
+  while (current) {
+    const kind = current.kind();
+    if (kind === "import_statement") return current;
+    if (kind === "lexical_declaration" || kind === "variable_declaration") {
+      const declarators = namedChildren(current).filter(
+        (child) => child.kind() === "variable_declarator",
+      );
+      return declarators.length === 1 ? current : null;
+    }
+    current = current.parent();
   }
-  return current;
+  return null;
 }
 
-// The module name of a `require("...")` call — parenthesized forms like
-// `(require)("...")` included — or null when the node is anything else.
-export function requireCallSource(node: SgNode<Js>): string | null {
-  const call = unwrapParens(node);
-  if (call.kind() !== "call_expression") return null;
-  const callee = call.field("function");
-  if (!callee || unwrapParens(callee).text() !== "require") return null;
-  const argumentsNode = call.field("arguments");
-  const args = argumentsNode ? namedChildren(argumentsNode) : [];
-  if (args.length !== 1 || args[0].kind() !== "string") return null;
-  return unquote(args[0].text());
-}
-
-// Top-level `require`/`import` bindings of the given module, matched
-// structurally so aliased/parenthesized forms are covered too.
+// Top-level `require`/`import` bindings of the given module, resolved by
+// @jssg/utils (ESM, CJS, aliases, namespace, dynamic import).
 export function collectModuleBindings(rootNode: SgNode<Js>, moduleName: string): ModuleBinding[] {
   const bindings: ModuleBinding[] = [];
-  for (const statement of rootNode.findAll({ rule: { kind: "import_statement" } })) {
-    const source = statement.field("source");
-    if (!source || unquote(source.text()) !== moduleName) continue;
-    const clause = statement.children().find((child) => child.kind() === "import_clause");
-    const defaultImport = clause
-      ? namedChildren(clause).find((child) => child.kind() === "identifier")
-      : undefined;
-    if (defaultImport) bindings.push({ name: defaultImport.text(), statement });
-  }
-  for (const declarator of rootNode.findAll({ rule: { kind: "variable_declarator" } })) {
-    const name = declarator.field("name");
-    const value = declarator.field("value");
-    if (!name || name.kind() !== "identifier" || !value) continue;
-    if (requireCallSource(value) !== moduleName) continue;
-    const statement = declarator.parent();
-    if (!statement) continue;
-    // Multi-declarator statements can't be removed wholesale — leave them alone.
-    const declaratorCount = namedChildren(statement).filter(
-      (child) => child.kind() === "variable_declarator",
-    ).length;
-    if (declaratorCount !== 1) continue;
-    bindings.push({ name: name.text(), statement });
+  const seen = new Set<string>();
+  const program = rootNode as SgNode<Js, "program">;
+  for (const resolved of getAllImports(program, { type: "default", from: moduleName })) {
+    const statement = bindingStatementOf(resolved.node);
+    if (!statement || seen.has(resolved.alias)) continue;
+    seen.add(resolved.alias);
+    bindings.push({ name: resolved.alias, statement });
   }
   return bindings;
 }
