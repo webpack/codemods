@@ -1,6 +1,5 @@
 // Keeps each codemod.yaml `version` in sync with the package.json version
 // bumped by `changeset version`. Run as part of the root `version` script.
-import console from "node:console";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 

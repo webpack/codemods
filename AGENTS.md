@@ -16,7 +16,7 @@ This repository hosts codemods that upgrade webpack configurations and APIs, pub
 
 Logic reused across codemods lives in the `packages/codemod-utils/` workspace (`@webpack/codemod-utils`), split into `ast.ts` (generic ast-grep helpers: `findPair`, `namedChildren`, `unwrapFilterCall`, …), `imports.ts` (structural `require`/`import` binding detection: `collectModuleBindings`, `requireCallSource`, `unwrapParens`), and `index.ts` (webpack-config helpers — `loaderNameOf`, `findConfigObjectFor`, `ruleMatchesFiles` — plus the `ConfigEditor` class: grouped removals, brace-aware insertion, EOL-aware output, unused-import cleanup). Import it from a codemod by adding `"@webpack/codemod-utils": "*"` to its `dependencies`; the jssg runner bundles it. Prefer extending it over copying helpers between codemods.
 
-The utils package is internal: it is never published and stays at version `0.0.0`. When a change to it affects released codemods, add a changeset for **each affected codemod** (they bundle the utils, so they are what needs re-publishing).
+The utils package is internal: it is never published and stays at version `0.0.0`. When a change to it affects released codemods, add a changeset for **each affected codemod** (they bundle the utils, so they are what needs re-publishing) — CI fails the PR if utils sources change without one.
 
 ## Creating a codemod
 
