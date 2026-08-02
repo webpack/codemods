@@ -3,6 +3,7 @@ import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import {
   ConfigEditor,
   type ModuleBinding,
+  addImport,
   cascadeRemovalTarget,
   collectModuleBindings,
   filterSuffixOf,
@@ -65,6 +66,8 @@ class CssMigration {
   private readonly pluginNames: Set<string>;
 
   private readonly configPlans = new Map<number, ConfigPlan>();
+  // Binding statements rewritten in place (e.g. into the `web` import).
+  private readonly repurposedStatements = new Set<number>();
 
   constructor(root: SgRoot<Js>) {
     this.editor = new ConfigEditor(root.root());
@@ -82,10 +85,12 @@ class CssMigration {
     }
     this.transformRules(usePairs);
     this.transformPlugins(pluginsPairs);
+    this.migrateCompilationHooks();
     this.planConfigInsertions();
     this.editor.finalizeRemovals();
     if (!this.editor.hasEdits) return null;
     for (const binding of this.pluginBindings) {
+      if (this.repurposedStatements.has(binding.statement.range().start.index)) continue;
       this.editor.removeBindingIfUnused(binding);
     }
     return this.editor.commit();
@@ -357,6 +362,70 @@ class CssMigration {
         }
       }
     }
+  }
+
+  // ---------- compilation hooks ----------
+
+  // Retarget `MiniCssExtractPlugin.getCompilationHooks(...)` to the native
+  // `CssLoadingRuntimeModule` — `linkPreload`/`linkPrefetch` keep their name
+  // and signature; `beforeTagInsert` maps to `linkInsert`. Only done when this
+  // file's CSS setup was actually migrated.
+  private migrateCompilationHooks(): void {
+    if (!this.editor.hasWork) return;
+    const rootNode = this.editor.rootNode;
+    const receivers: SgNode<Js>[] = [];
+    for (const node of rootNode.findAll({ rule: { kind: "member_expression" } })) {
+      if (node.field("property")?.text() !== "getCompilationHooks") continue;
+      const objectPart = node.field("object");
+      if (!objectPart) continue;
+      if (
+        (objectPart.kind() === "identifier" && this.pluginNames.has(objectPart.text())) ||
+        this.isInlinePluginRequire(objectPart)
+      ) {
+        receivers.push(objectPart);
+      }
+    }
+    if (!receivers.length) return;
+    const nativeReceiver = this.nativeHooksReceiver();
+    for (const objectPart of receivers) this.editor.replace(objectPart, nativeReceiver);
+    // `beforeTagInsert` has no same-name native hook; `linkInsert` replaces it.
+    for (const property of rootNode.findAll({ rule: { kind: "property_identifier" } })) {
+      if (property.text() === "beforeTagInsert") this.editor.replace(property, "linkInsert");
+    }
+    for (const shorthand of rootNode.findAll({
+      rule: { kind: "shorthand_property_identifier_pattern" },
+    })) {
+      if (shorthand.text() === "beforeTagInsert") {
+        // Keep the local variable name; only the destructured key changes.
+        this.editor.replace(shorthand, "linkInsert: beforeTagInsert");
+      }
+    }
+  }
+
+  // Existing webpack binding, or a `web` import — rewriting the plugin's own
+  // import statement in place when possible (a separate added import would
+  // land inside the removed statement's range and be dropped).
+  private nativeHooksReceiver(): string {
+    const webpackBindings = collectModuleBindings(this.editor.rootNode, "webpack");
+    if (webpackBindings.length) return `${webpackBindings[0].name}.web.CssLoadingRuntimeModule`;
+    const binding = this.pluginBindings[0];
+    if (binding) {
+      const isEsm = binding.statement.kind() === "import_statement";
+      this.editor.replace(
+        binding.statement,
+        isEsm ? 'import { web } from "webpack";' : 'const { web } = require("webpack");',
+      );
+      this.repurposedStatements.add(binding.statement.range().start.index);
+    } else {
+      const edit = addImport(this.editor.rootNode as SgNode<Js, "program">, {
+        type: "named",
+        specifiers: [{ name: "web" }],
+        from: "webpack",
+        moduleType: "cjs",
+      });
+      if (edit) this.editor.addEdit(edit);
+    }
+    return "web.CssLoadingRuntimeModule";
   }
 
   // ---------- config-level insertions ----------

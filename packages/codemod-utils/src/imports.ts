@@ -4,6 +4,8 @@ import { getAllImports } from "@jssg/utils/javascript/imports";
 
 import { namedChildren } from "./ast";
 
+export { addImport } from "@jssg/utils/javascript/imports";
+
 // A top-level `require`/`import` binding of a given module.
 export interface ModuleBinding {
   name: string;

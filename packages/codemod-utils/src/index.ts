@@ -103,6 +103,15 @@ export class ConfigEditor {
     return this.edits.length > 0;
   }
 
+  // Whether any edit or pending removal has been registered so far.
+  get hasWork(): boolean {
+    return this.edits.length > 0 || this.pendingRemovals.size > 0;
+  }
+
+  addEdit(edit: Edit): void {
+    this.edits.push(edit);
+  }
+
   // Generated text may mix "\n" with source fragments that already carry the
   // file's EOL — normalize both so the conversion never doubles a "\r".
   private toSourceEol(text: string): string {
