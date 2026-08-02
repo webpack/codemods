@@ -1,6 +1,6 @@
 # webpack codemods — agent guide
 
-This repository hosts codemods that upgrade webpack configurations and APIs, published to the [Codemod Registry](https://app.codemod.com/registry) and run with `npx codemod@latest run @webpack/<codemod-name>`.
+This repository hosts codemods that upgrade webpack configurations and APIs, published to the [Codemod Registry](https://app.codemod.com/registry) and run with `npx codemod run @webpack/<codemod-name>`.
 
 ## Commands
 

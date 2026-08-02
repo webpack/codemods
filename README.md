@@ -13,7 +13,7 @@ A collection of codemods to automatically upgrade webpack configurations and API
 Run a codemod on your project with the [Codemod CLI](https://docs.codemod.com/cli):
 
 ```sh
-npx codemod@latest run @webpack/<codemod-name>
+npx codemod run @webpack/<codemod-name>
 ```
 
 ## Codemods

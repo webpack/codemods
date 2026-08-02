@@ -21,7 +21,7 @@ Only rules the file demonstrably owns as webpack config are transformed (a `rule
 ## Usage
 
 ```sh
-npx codemod@latest run @webpack/css-plugins-to-native-css
+npx codemod run @webpack/css-plugins-to-native-css
 ```
 
 ## Example
