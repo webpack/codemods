@@ -31,6 +31,7 @@ interface UseSwap {
   pair: SgNode<Js>;
   ruleObject: SgNode<Js>;
   keptLoaders: SgNode<Js>[];
+  filterSuffix: string;
 }
 
 interface RulesArrayWork {
@@ -83,13 +84,22 @@ function isInsideAny(range: Range, ranges: Range[]): boolean {
   return ranges.some((outer) => range.start >= outer.start && range.end <= outer.end);
 }
 
-// `[ ... ].filter(Boolean)` — return the inner array literal.
+// `[ ... ].filter(<any predicate>)` — return the inner array literal.
 function unwrapFilterCall(node: SgNode<Js>): SgNode<Js> {
   if (node.kind() !== "call_expression") return node;
   const callee = node.field("function");
   if (!callee || callee.kind() !== "member_expression") return node;
+  if (callee.field("property")?.text() !== "filter") return node;
   const receiver = callee.field("object");
   return receiver && receiver.kind() === "array" ? receiver : node;
+}
+
+// The `.filter(...)` text that followed the array, e.g. `.filter((x) => !!x)`.
+function filterSuffixOf(originalValue: SgNode<Js>, arrayNode: SgNode<Js>): string {
+  if (originalValue.range().start.index === arrayNode.range().start.index) {
+    return originalValue.text().slice(arrayNode.text().length);
+  }
+  return "";
 }
 
 // ---------- webpack-specific recognition ----------
@@ -278,9 +288,9 @@ class CssMigration {
     const rulesWork = new Map<number, RulesArrayWork>();
     for (const pair of this.rootNode.findAll({ rule: { kind: "pair" } })) {
       if (keyName(pair) !== "use") continue;
-      let value = pair.field("value");
-      if (!value) continue;
-      value = unwrapFilterCall(value);
+      const originalValue = pair.field("value");
+      if (!originalValue) continue;
+      const value = unwrapFilterCall(originalValue);
       const elements = value.kind() === "array" ? namedChildren(value) : [value];
       if (!elements.length) continue;
       const removable = elements.filter((element) => this.isRemovableUseElement(element));
@@ -304,7 +314,12 @@ class CssMigration {
       if (trivialRule && !kept.length && arrayNode.kind() === "array") {
         work.removedElements.push(ruleObject);
       } else {
-        work.swaps.push({ pair, ruleObject, keptLoaders: kept });
+        work.swaps.push({
+          pair,
+          ruleObject,
+          keptLoaders: kept,
+          filterSuffix: filterSuffixOf(originalValue, value),
+        });
       }
     }
     return rulesWork;
@@ -332,13 +347,13 @@ class CssMigration {
   private replaceUsePair(swap: UseSwap): void {
     if (swap.keptLoaders.length) {
       // Kept loaders stay in `use`; native CSS parses their output. Guarded
-      // entries keep the `.filter(Boolean)` that drops their falsy branch.
+      // entries keep the original `.filter(...)` that drops their falsy branch.
       const keptTexts = swap.keptLoaders.map((loader) => loader.text());
       const keepsGuard = swap.keptLoaders.some(
         (loader) =>
           loader.kind() === "binary_expression" || loader.kind() === "ternary_expression",
       );
-      const filterSuffix = keepsGuard ? ".filter(Boolean)" : "";
+      const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
       const indent = lineIndent(this.source, swap.pair.range().start.index);
       const separator = swap.ruleObject.text().includes("\n") ? `,\n${indent}` : ", ";
       this.edits.push(
