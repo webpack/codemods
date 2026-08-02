@@ -7,7 +7,7 @@
   "scripts": {
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "npm run test --workspaces",
+    "test": "npm run test --workspaces --if-present",
     "type-check": "tsc --noEmit"
   },
   "repository": {

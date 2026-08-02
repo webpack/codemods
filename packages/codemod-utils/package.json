@@ -10,9 +10,6 @@
       "default": "./src/index.ts"
     }
   },
-  "scripts": {
-    "test": "node -e \"\""
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/webpack/codemods.git",
