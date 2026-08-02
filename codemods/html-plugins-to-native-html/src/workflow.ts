@@ -1120,12 +1120,12 @@ class HtmlMigration {
       const entryFile = entrySegments.join(separator);
       const probe = (candidate: string): string => {
         try {
-          return String(fs.existsSync(candidate));
+          return `len${fs.readFileSync(candidate, "utf8").length}`;
         } catch (error) {
           return `ERR:${(error as Error).message}`;
         }
       };
-      this.injectDebug = `raw=${this.configFileName} tpl=${templateFile} e1=${probe(templateFile)} e2=${probe(templateFile.replace(/\\/g, "/"))} e3=${probe(`\\\\?\\${templateFile}`)} cwd=${(globalThis as { process?: { cwd?: () => string } }).process?.cwd?.()}`;
+      this.injectDebug = `r1=${probe(templateFile)} r2=${probe(templateFile.replace(/\\/g, "/"))} r3=${probe(this.configFileName)} stat=${typeof fs.statSync} access=${typeof fs.accessSync}`;
       if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
       const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
       const html = fs.readFileSync(templateFile, "utf8");
