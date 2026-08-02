@@ -13,6 +13,7 @@ import {
   namedChildren,
   pairsOf,
   ruleMatchesFiles,
+  unquote,
   unwrapFilterCall,
 } from "@webpack/codemod-utils";
 
@@ -85,12 +86,21 @@ class CssMigration {
 
   // ---------- plugin recognition ----------
 
-  // `MiniCssExtractPlugin.loader` or `require("mini-css-extract-plugin").loader`.
+  // The plugin's `.loader` in any access form: `MiniCssExtractPlugin.loader`,
+  // `MiniCssExtractPlugin["loader"]`, or `require("mini-css-extract-plugin").loader`.
   private isPluginLoaderExpression(node: SgNode<Js>): boolean {
-    if (node.kind() !== "member_expression") return false;
-    const objectPart = node.field("object");
-    const propertyPart = node.field("property");
-    if (!objectPart || !propertyPart || propertyPart.text() !== "loader") return false;
+    let objectPart: SgNode<Js> | null = null;
+    if (node.kind() === "member_expression") {
+      if (node.field("property")?.text() !== "loader") return false;
+      objectPart = node.field("object");
+    } else if (node.kind() === "subscript_expression") {
+      const indexPart = node.field("index");
+      if (!indexPart || indexPart.kind() !== "string" || unquote(indexPart.text()) !== "loader") {
+        return false;
+      }
+      objectPart = node.field("object");
+    }
+    if (!objectPart) return false;
     if (objectPart.kind() === "identifier") return this.pluginNames.has(objectPart.text());
     return (
       objectPart.kind() === "call_expression" &&
