@@ -27,9 +27,9 @@ const HTML_SAMPLE_FILES = ["/file.html"];
 const HEAD_TAG_OPTIONS = new Set(["title", "meta", "favicon", "base"]);
 // Build-ergonomics options with no effect on the emitted page.
 const DROPPABLE_OPTIONS = new Set(["cache", "showErrors", "chunksSortMode"]);
-// Loader options native HTML covers on its own (ESM export of the html string;
-// production minification).
-const DROPPABLE_LOADER_OPTIONS = new Set(["esModule", "minimize"]);
+// Loader options native HTML covers on its own: `esModule` (native exports are
+// ESM) and boolean `minimize` (optimization.minimizer minifies in production).
+const DROPPABLE_LOADER_OPTIONS = new Set(["esModule"]);
 // Manual migration paths appended to the review comment where one exists.
 const LOST_OPTION_HINTS = new Map([
   ["publicPath", "set output.publicPath"],
@@ -44,6 +44,11 @@ const LOST_OPTION_HINTS = new Map([
     "html-loader.preprocessor",
     "move it to the rule's parser.template — synchronous (source, { module, resource }) => string",
   ],
+  [
+    "html-loader.postprocessor",
+    "tap HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml for emitted pages",
+  ],
+  ["html-loader.minimize", "customize optimization.minimizer instead"],
 ]);
 
 type FsModule = typeof import("node:fs");
@@ -308,6 +313,14 @@ class HtmlMigration {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
       if (name !== null && DROPPABLE_LOADER_OPTIONS.has(name)) continue;
+      if (name === "minimize" && value) {
+        // Custom minifier settings don't carry over; booleans do (production
+        // minification via optimization.minimizer is the native behavior).
+        if (value.kind() !== "true" && value.kind() !== "false") {
+          findings.lost.push(this.describeLost(`${LOADER_NAME}.minimize`));
+        }
+        continue;
+      }
       if (name === "sources" && value) {
         // Booleans map to the rule's parser; source lists need a human.
         if (value.kind() === "true" || value.kind() === "false") {
@@ -317,11 +330,7 @@ class HtmlMigration {
         }
         continue;
       }
-      if (name === "preprocessor") {
-        findings.lost.push(this.describeLost(`${LOADER_NAME}.preprocessor`));
-        continue;
-      }
-      findings.lost.push(`${LOADER_NAME}.${name ?? "options"}`);
+      findings.lost.push(this.describeLost(`${LOADER_NAME}.${name ?? "options"}`));
     }
   }
 
