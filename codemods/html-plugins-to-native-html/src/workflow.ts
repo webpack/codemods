@@ -37,7 +37,7 @@ const LOST_OPTION_HINTS = new Map([
   ["chunks", "use per-entry `html` descriptors"],
   ["excludeChunks", "use per-entry `html` descriptors"],
   ["scriptLoading", "module scripts come from experiments.outputModule"],
-  ["minify", "native HTML minifies production output on its own"],
+  ["minify", "production HTML is minified by default; customize via optimization.minimizer (minimizer-webpack-plugin)"],
   ["templateContent", "author the page as an .html entry file"],
   ["html-loader.sources", "customize the rule's parser.sources list"],
   [
@@ -48,7 +48,7 @@ const LOST_OPTION_HINTS = new Map([
     "html-loader.postprocessor",
     "tap HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml for emitted pages",
   ],
-  ["html-loader.minimize", "customize optimization.minimizer instead"],
+  ["html-loader.minimize", "customize via optimization.minimizer (minimizer-webpack-plugin)"],
 ]);
 
 type FsModule = typeof import("node:fs");
