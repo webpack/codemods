@@ -52,7 +52,6 @@ const LOST_OPTION_HINTS = new Map([
 ]);
 
 type FsModule = typeof import("node:fs");
-type PathModule = typeof import("node:path");
 
 // Plugin hooks renamed to the native `HtmlModulesPlugin.getCompilationHooks`
 // stage covering the same moment; arguments differ, hence the review comments.
@@ -139,6 +138,42 @@ interface ConfigPlan {
   pluginMigratedHere: boolean;
 }
 
+// Split a filename into segments, dropping Windows extended-length prefixes.
+function pathSegments(fileName: string): string[] {
+  const plain = fileName.replace(/^\\\\\?\\(UNC\\)?/, "");
+  return plain.split(/[\\/]/);
+}
+
+// Resolve a `./`/`../` request against base directory segments.
+function applyRelativePath(baseSegments: string[], relative: string): string[] | null {
+  const segments = [...baseSegments];
+  for (const part of relative.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (segments.length <= 1) return null;
+      segments.pop();
+    } else {
+      segments.push(part);
+    }
+  }
+  return segments;
+}
+
+// Relative URL (forward slashes) from a directory to a file.
+function relativeUrl(fromDirSegments: string[], toSegments: string[]): string {
+  let common = 0;
+  while (
+    common < fromDirSegments.length &&
+    common < toSegments.length - 1 &&
+    fromDirSegments[common] === toSegments[common]
+  ) {
+    common += 1;
+  }
+  const ups = fromDirSegments.length - common;
+  const down = toSegments.slice(common).join("/");
+  return ups ? `${"../".repeat(ups)}${down}` : `./${down}`;
+}
+
 // Insert the script tag before `</head>` (or `</body>`), matching the
 // closing tag's indentation; append when the template has neither.
 function insertScriptTag(html: string, tag: string): string {
@@ -169,8 +204,6 @@ class HtmlMigration {
   private readonly configPlans = new Map<number, ConfigPlan>();
   private readonly configFileName: string;
   private readonly fileSystem: FsModule | null;
-  private readonly pathModule: PathModule | null;
-  private injectDebug = "";
   private pluginMigrated = false;
   private pluginRetained = false;
   // Binding statements rewritten in place (e.g. into the `html` import).
@@ -179,7 +212,7 @@ class HtmlMigration {
   private readonly siblingBindings: ModuleBinding[] = [];
   private readonly siblingNameToModule = new Map<string, string>();
 
-  constructor(root: SgRoot<Js>, fileSystem: FsModule | null, pathModule: PathModule | null) {
+  constructor(root: SgRoot<Js>, fileSystem: FsModule | null) {
     this.editor = new ConfigEditor(root.root());
     this.pluginBindings = collectModuleBindings(this.editor.rootNode, PLUGIN_MODULE);
     this.pluginNames = new Set(this.pluginBindings.map((binding) => binding.name));
@@ -193,7 +226,6 @@ class HtmlMigration {
     }
     this.configFileName = root.filename();
     this.fileSystem = fileSystem;
-    this.pathModule = pathModule;
   }
 
   run(): string | null {
@@ -1050,7 +1082,7 @@ class HtmlMigration {
     const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
     const comment = injected
       ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
-      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script> [${this.injectDebug}]`;
+      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
       const indent = lineIndent(this.editor.source, entryPair.range().start.index);
@@ -1071,23 +1103,22 @@ class HtmlMigration {
   // (no filesystem access, non-relative paths, or files not found on disk).
   private injectScriptIntoTemplate(templateQuoted: string, entryRel: string): string | null {
     const fs = this.fileSystem;
-    const path = this.pathModule;
-    if (!fs || !path || !this.configFileName) {
-      this.injectDebug = `no-modules fs=${Boolean(fs)} path=${Boolean(path)} file=${this.configFileName}`;
-      return null;
-    }
+    if (!fs || !this.configFileName) return null;
     const templateRel = unquote(templateQuoted);
     if (!templateRel.startsWith(".") || !entryRel.startsWith(".")) return null;
     try {
-      const configDir = path.dirname(this.configFileName);
-      const templateFile = path.resolve(configDir, templateRel);
-      const entryFile = path.resolve(configDir, entryRel);
-      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) {
-        this.injectDebug = `missing file=${this.configFileName} dir=${configDir} tpl=${templateFile}(${fs.existsSync(templateFile)}) entry=${entryFile}(${fs.existsSync(entryFile)})`;
-        return null;
-      }
-      const relative = path.relative(path.dirname(templateFile), entryFile).replace(/\\/g, "/");
-      const scriptSrc = relative.startsWith(".") ? relative : `./${relative}`;
+      // Paths are handled as segment arrays — the runtime's `path` module
+      // mangles Windows extended-length (`\\?\`) filenames.
+      const configSegments = pathSegments(this.configFileName);
+      const separator = this.configFileName.includes("\\") ? "\\" : "/";
+      configSegments.pop();
+      const templateSegments = applyRelativePath(configSegments, templateRel);
+      const entrySegments = applyRelativePath(configSegments, entryRel);
+      if (!templateSegments || !entrySegments) return null;
+      const templateFile = templateSegments.join(separator);
+      const entryFile = entrySegments.join(separator);
+      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
+      const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
       const html = fs.readFileSync(templateFile, "utf8");
       // Already loaded (e.g. a re-run) — nothing to write.
       const sourcePattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi;
@@ -1100,8 +1131,7 @@ class HtmlMigration {
         insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
       );
       return scriptSrc;
-    } catch (error) {
-      this.injectDebug = `error ${(error as Error).message}`;
+    } catch {
       return null;
     }
   }
@@ -1225,14 +1255,12 @@ class HtmlMigration {
 
 async function transform(root: SgRoot<Js>): Promise<string | null> {
   let fileSystem: FsModule | null = null;
-  let pathModule: PathModule | null = null;
   try {
     fileSystem = await import("node:fs");
-    pathModule = await import("node:path");
   } catch {
     // No filesystem access — template edits fall back to review comments.
   }
-  return new HtmlMigration(root, fileSystem, pathModule).run();
+  return new HtmlMigration(root, fileSystem).run();
 }
 
 export default transform;
