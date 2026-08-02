@@ -1,0 +1,27 @@
+{
+  "name": "@webpack/html-plugins-to-native-html",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Migrate html-webpack-plugin and html-loader rules to webpack's native HTML support (experiments.html).",
+  "type": "module",
+  "scripts": {
+    "test": "npm run test:workflow && npm run test:dependencies",
+    "test:workflow": "npx codemod jssg test -l typescript ./src/workflow.ts",
+    "test:dependencies": "npx codemod jssg test -l json ./src/remove-dependencies.ts ./tests/remove-dependencies"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webpack/codemods.git",
+    "directory": "codemods/html-plugins-to-native-html",
+    "bugs": "https://github.com/webpack/codemods/issues"
+  },
+  "author": "Sebastian Beltran <bjohansebas@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/webpack/codemods/blob/main/codemods/html-plugins-to-native-html/README.md",
+  "dependencies": {
+    "@webpack/codemod-utils": "*"
+  },
+  "devDependencies": {
+    "@codemod.com/jssg-types": "^1.6.2"
+  }
+}
