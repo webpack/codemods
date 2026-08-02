@@ -38,6 +38,17 @@ const EXPORTS_CONVENTION_MAP = new Map([
   ["dashes", "dashes"],
   ["dashesOnly", "dashes-only"],
 ]);
+// Manual migration paths appended to the review comment where one exists.
+const LOST_OPTION_HINTS = new Map([
+  ["style-loader.insert", "tap webpack.web.CssLoadingRuntimeModule.getCompilationHooks().linkInsert"],
+  [
+    "style-loader.styleTagTransform",
+    "tap webpack.web.CssLoadingRuntimeModule.getCompilationHooks().createStylesheet",
+  ],
+  ["style-loader.attributes.nonce", "set __webpack_nonce__ or output.html.csp.nonce"],
+  ["css-loader.sourceMap", "scope devtool entries per asset type"],
+  ["MiniCssExtractPlugin.loader.publicPath", "set generator.publicPath on the matching asset rules"],
+]);
 // Options native CSS covers on its own; any other option is flagged when dropped.
 const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "esModule"]);
 const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
@@ -645,7 +656,11 @@ class CssMigration {
     // Flag dropped loader options right where they lived.
     let commentPrefix = "";
     if (swap.lostOptions.length) {
-      const message = `Removed loader options without a native CSS equivalent: ${swap.lostOptions.join(", ")}`;
+      const described = swap.lostOptions.map((name) => {
+        const hint = LOST_OPTION_HINTS.get(name);
+        return hint ? `${name} (${hint})` : name;
+      });
+      const message = `Removed loader options without a native CSS equivalent: ${described.join(", ")}`;
       commentPrefix = multiline ? `// ${message}\n${indent}` : `/* ${message} */ `;
     }
     const separator = multiline ? `,\n${indent}` : ", ";

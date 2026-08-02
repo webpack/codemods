@@ -8,7 +8,7 @@ module.exports = {
       {
         test: /\.css$/,
         include: "src",
-        // Removed loader options without a native CSS equivalent: css-loader.sourceMap
+        // Removed loader options without a native CSS equivalent: css-loader.sourceMap (scope devtool entries per asset type)
         type: "css/auto",
       },
     ],
