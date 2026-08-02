@@ -25,7 +25,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 
 ### `template`
 
-`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The codemod turns the template into the entry, and — because the HTML file now drives the build — it must load the previous JS entry itself. When the template and entry files are found on disk (both paths relative), the codemod edits the template and adds `<script defer src="…"></script>` (relative to the template) before `</head>`, skipping templates that already load it; otherwise it leaves a review comment telling you to add the tag yourself. Since head tags are only injected into webpack-generated pages, `title`/`meta`/`favicon`/`base` are flagged to be added to the template instead.
+`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The codemod turns the template into the entry, and — because the HTML file now drives the build — it must load the previous JS entry itself. The review comment always states the exact tag (`<script defer src="…"></script>`, relative to the template), and as a best effort the codemod also edits the template in place, inserting the tag before `</head>` unless it is already there (the in-place edit is skipped where the runtime sandbox blocks file access, e.g. on Windows — the comment still tells you what to add). Since head tags are only injected into webpack-generated pages, `title`/`meta`/`favicon`/`base` are flagged to be added to the template instead.
 
 ### What is left untouched
 

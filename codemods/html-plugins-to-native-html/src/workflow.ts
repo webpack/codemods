@@ -1090,7 +1090,7 @@ class HtmlMigration {
       findings.pendingEntry = {
         text: templateValue,
         comment: injected
-          ? `The template is now the entry and loads the previous default entry via <script defer src="${injected}"></script>`
+          ? `The template is now the entry: it must load the previous default entry via <script defer src="${injected}"></script> (added automatically when the template was found on disk)`
           : `The template is now the entry: reference the previous entry (webpack's default is ./src/index.js) from it, e.g. <script defer src="./src/index.js"></script>`,
       };
       return;
@@ -1103,7 +1103,7 @@ class HtmlMigration {
     }
     const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
     const comment = injected
-      ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
+      ? `The template is now the entry: it must load the previous entry via <script defer src="${injected}"></script> (added automatically when the template was found on disk)`
       : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
@@ -1124,37 +1124,48 @@ class HtmlMigration {
   // when the template already loads it; `null` falls back to a review comment
   // (no filesystem access, non-relative paths, or files not found on disk).
   private injectScriptIntoTemplate(templateQuoted: string, entryRel: string): string | null {
-    const fs = this.fileSystem;
-    if (!fs || !this.configFileName) return null;
+    if (!this.configFileName) return null;
     const templateRel = unquote(templateQuoted);
     if (!templateRel.startsWith(".") || !entryRel.startsWith(".")) return null;
+    // Paths are handled as segment arrays — the runtime's `path` module
+    // mangles Windows extended-length (`\\?\`) filenames.
+    const configSegments = pathSegments(this.configFileName);
+    const separator = this.configFileName.includes("\\") ? "\\" : "/";
+    configSegments.pop();
+    const templateSegments = applyRelativePath(configSegments, templateRel);
+    const entrySegments = applyRelativePath(configSegments, entryRel);
+    if (!templateSegments || !entrySegments) return null;
+    const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
+    // Best effort: edit the template in place. The runtime's sandboxed fs
+    // denies transform reads on Windows, so failure just leaves the edit to
+    // the review comment (which carries the exact tag either way).
+    this.tryEditTemplate(templateSegments, separator, scriptSrc);
+    return scriptSrc;
+  }
+
+  private tryEditTemplate(
+    templateSegments: string[],
+    separator: string,
+    scriptSrc: string,
+  ): void {
+    const fs = this.fileSystem;
+    if (!fs) return;
     try {
-      // Paths are handled as segment arrays — the runtime's `path` module
-      // mangles Windows extended-length (`\\?\`) filenames.
-      const configSegments = pathSegments(this.configFileName);
-      const separator = this.configFileName.includes("\\") ? "\\" : "/";
-      configSegments.pop();
-      const templateSegments = applyRelativePath(configSegments, templateRel);
-      const entrySegments = applyRelativePath(configSegments, entryRel);
-      if (!templateSegments || !entrySegments) return null;
       const template = this.readFirst(fs, pathCandidates(templateSegments, separator));
-      if (!template) return null;
-      if (!this.readFirst(fs, pathCandidates(entrySegments, separator))) return null;
-      const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
+      if (!template) return;
       const html = template.content;
       // Already loaded (e.g. a re-run) — nothing to write.
       const sourcePattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi;
       for (let match = sourcePattern.exec(html); match; match = sourcePattern.exec(html)) {
         const existing = match[1].startsWith(".") ? match[1] : `./${match[1]}`;
-        if (existing === scriptSrc) return scriptSrc;
+        if (existing === scriptSrc) return;
       }
       fs.writeFileSync(
         template.path,
         insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
       );
-      return scriptSrc;
     } catch {
-      return null;
+      // Unreachable template — the review comment covers the manual step.
     }
   }
 
