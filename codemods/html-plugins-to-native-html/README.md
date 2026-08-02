@@ -11,6 +11,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 - Sets `output.htmlFilename` to the plugin's `filename` — or to `"index.html"`, the plugin's default, since the native default is `[name].html`.
 - Maps plugin options to their `output.html` counterparts: `title`, `meta` (string values), `favicon`, `base`, `inject` (`"body"`/`"head"`/`false`; `true` is the native default), and `scriptLoading: "blocking"` (`"defer"` is the native default).
 - Drops options the native pipeline covers on its own (`minify: true`/`"auto"`, `cache`, `showErrors`, `chunksSortMode`, `chunks: "all"`, `publicPath: "auto"`) silently.
+- **Multi-page setups**: several instances (or a `chunks: ["name"]` list) map to per-entry `html` descriptors — each listed entry becomes `{ import: …, html: <options> }`, unlisted entries get no page, and `output.htmlFilename: "[name].html"` covers the per-page filenames. Requires each instance to own exactly one entry via `chunks` and no `template`; instance filenames other than `<entry>.html`/`[name].html` are flagged.
 - Options without a native equivalent (`hash`, a `minify` object, `chunks` arrays, `templateContent`, `templateParameters`, …) are dropped with a `// Removed html-webpack-plugin options without a native HTML equivalent: …` comment so you can review the behavior change; a manual migration path is appended where one exists.
 - Migrates `HtmlWebpackPlugin.getHooks(...)` taps to the native `webpack.html.HtmlModulesPlugin.getCompilationHooks(...)` stage covering the same moment: `alterAssetTags`/`alterAssetTagGroups` → `transformTags`, `beforeEmit` → `transformHtml`, `afterEmit` → `htmlEmitted`. The native stages take different arguments (`transformTags` hands you mutable tag descriptors instead of `data.assetTags`/head-body arrays; `transformHtml` is a waterfall on the HTML string instead of `data.html`), so each renamed tap gets a `// Review: …` comment describing the new signature — review the callback body.
 
@@ -27,7 +28,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 
 ### What is left untouched
 
-- Configurations with **several** plugin instances (multi-page setups with `chunks` per page): they map to per-entry `html` descriptors, but doing that safely needs a human — see [the entry `html` option](https://webpack.js.org/concepts/entry-points/).
+- Multi-page configurations the per-entry shape can't express: an instance whose `chunks` lists several entries (one page aggregating several chunks), combines `chunks` with `template`, or names an entry the config's `entry` object doesn't declare.
 - Files that tap `beforeAssetTagGeneration` or `afterTemplateExecution` via `HtmlWebpackPlugin.getHooks(...)`: those stages have no native equivalent (webpack builds the tags and runs the parser template itself).
 - Plugin instantiations whose options are not an object literal.
 
