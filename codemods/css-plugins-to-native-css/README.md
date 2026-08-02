@@ -9,7 +9,7 @@ Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader
 - Any other loader in the chain (`sass-loader`, `less-loader`, `postcss-loader`, custom ones, …) keeps working in front of native CSS: it stays in `use` while the injection/extraction loaders are dropped, and the rule gets `type: "css/auto"`.
 - Removes `new MiniCssExtractPlugin(...)` from `plugins` (and the whole `plugins` entry when it becomes empty), migrating its options to their native counterparts: `filename` → `output.cssFilename`, `chunkFilename` → `output.cssChunkFilename`.
 - Removes the `mini-css-extract-plugin` `require`/`import` once it is unused.
-- Understands the classic conditional patterns (including ejected Create React App configs): the `isDev ? "style-loader" : MiniCssExtractPlugin.loader` ternary, `isEnvDevelopment && "style-loader"` guards, `require.resolve("css-loader")`, and `[...].filter(Boolean)` around `use` and `plugins`.
+- Understands conditional patterns (including ejected Create React App configs): the `isDev ? "style-loader" : MiniCssExtractPlugin.loader` ternary, `isEnvDevelopment && "style-loader"` guards, `require.resolve("css-loader")`, and `[...].filter(Boolean)` around `use` and `plugins`.
 
 The remaining `MiniCssExtractPlugin` options have **no native equivalent** and are dropped: `ignoreOrder`, `insert`, `attributes`, `linkType`, `runtime`, and `experimentalUseImportModule`. Review your build if you relied on them.
 
