@@ -107,6 +107,8 @@ interface InstanceFindings {
   notes: string[];
   // `entry` property to create when the config had none (template mode).
   pendingEntry: { text: string; comment: string } | null;
+  // `scriptLoading: "module"` — ESM output, set config-wide.
+  scriptLoadingModule: boolean;
 }
 
 // Loader options translated into the surviving rule, plus the ones lost.
@@ -264,6 +266,17 @@ class HtmlMigration {
   private requireExperimentsHtml(plan: ConfigPlan): void {
     if (!plan.experimentsProps.some((prop) => prop.name === "html")) {
       plan.experimentsProps.push({ name: "html", valueText: "true" });
+    }
+  }
+
+  // `scriptLoading: "module"` means ESM output — a config-wide switch.
+  private applyModuleScripts(plan: ConfigPlan, moduleScripts: boolean): void {
+    if (!moduleScripts) return;
+    if (!plan.outputProps.some((prop) => prop.name === "module")) {
+      plan.outputProps.push({ name: "module", valueText: "true" });
+    }
+    if (!plan.experimentsProps.some((prop) => prop.name === "outputModule")) {
+      plan.experimentsProps.push({ name: "outputModule", valueText: "true" });
     }
   }
 
@@ -678,8 +691,10 @@ class HtmlMigration {
       this.pluginRetained = true;
       return;
     }
+    const plan = this.planFor(configObject);
     const pages: { entryDescriptor: SgNode<Js>; htmlValue: string }[] = [];
     const lost: string[] = [];
+    let moduleScripts = false;
     for (const options of optionObjects) {
       // Each page needs exactly one owning entry in `chunks`.
       const chunksValue = options ? findPair(options, "chunks")?.field("value") : undefined;
@@ -708,12 +723,12 @@ class HtmlMigration {
         }
       }
       lost.push(...findings.lost);
+      moduleScripts ||= findings.scriptLoadingModule;
       const htmlValue = findings.htmlProps.length
         ? `{ ${findings.htmlProps.map((prop) => `${prop.name}: ${prop.valueText}`).join(", ")} }`
         : "true";
       pages.push({ entryDescriptor, htmlValue });
     }
-    const plan = this.planFor(configObject);
     const siblingRemoved = this.processSiblings(
       elements,
       instances.map((instance) => instance.element),
@@ -736,6 +751,7 @@ class HtmlMigration {
     }
     plan.pluginMigratedHere = true;
     this.requireExperimentsHtml(plan);
+    this.applyModuleScripts(plan, moduleScripts);
     plan.htmlFilename ??= '"[name].html"';
     if (lost.length) {
       plan.commentLines.push(
@@ -843,6 +859,7 @@ class HtmlMigration {
       lost: [],
       notes: [],
       pendingEntry: null,
+      scriptLoadingModule: false,
     };
     if (!optionsObject) return findings;
     const templateValue = findPair(optionsObject, "template")?.field("value");
@@ -889,15 +906,7 @@ class HtmlMigration {
         findings.htmlProps.push({ name, valueText: value.text() });
         break;
       case "meta":
-        // Native meta values are `content` strings; attribute objects are not.
-        if (
-          value.kind() === "object" &&
-          pairsOf(value).every((pair) => pair.field("value")?.kind() === "string")
-        ) {
-          findings.htmlProps.push({ name, valueText: value.text() });
-        } else {
-          findings.lost.push(this.describeLost(name));
-        }
+        this.collectMetaOption(value, findings);
         break;
       case "inject":
         // `true` is the native default placement; the template authors its own tags.
@@ -913,9 +922,17 @@ class HtmlMigration {
         break;
       case "scriptLoading":
         // Native `"auto"` already defers classic scripts.
-        if (templateMode || literal === "defer") break;
-        if (literal === "blocking") {
+        if (literal === "defer") break;
+        if (templateMode) {
+          if (literal === "module") {
+            findings.lost.push(
+              'scriptLoading (enable experiments.outputModule and use <script type="module"> in the template)',
+            );
+          }
+        } else if (literal === "blocking") {
           findings.htmlProps.push({ name, valueText: '"blocking"' });
+        } else if (literal === "module") {
+          findings.scriptLoadingModule = true;
         } else {
           findings.lost.push(this.describeLost(name));
         }
@@ -937,6 +954,46 @@ class HtmlMigration {
         break;
       default:
         findings.lost.push(this.describeLost(name));
+    }
+  }
+
+  // Meta values map when they are `content` strings, or `{ name |
+  // property, content }` objects (native keys `og:*` use `property` on their
+  // own); anything else — extra attributes, `http-equiv` — is flagged per key.
+  private collectMetaOption(value: SgNode<Js>, findings: InstanceFindings): void {
+    if (value.kind() !== "object") {
+      findings.lost.push("meta");
+      return;
+    }
+    const parts: string[] = [];
+    for (const metaPair of pairsOf(value)) {
+      const metaKey = keyName(metaPair);
+      const metaValue = metaPair.field("value");
+      if (!metaKey || !metaValue) {
+        findings.lost.push("meta");
+        continue;
+      }
+      if (metaValue.kind() === "string") {
+        parts.push(metaPair.text());
+        continue;
+      }
+      if (metaValue.kind() === "object") {
+        const nameValue = (findPair(metaValue, "name") ?? findPair(metaValue, "property"))?.field(
+          "value",
+        );
+        const contentValue = findPair(metaValue, "content")?.field("value");
+        const extraKeys = pairsOf(metaValue)
+          .map((pair) => keyName(pair))
+          .filter((key) => key !== "name" && key !== "property" && key !== "content");
+        if (nameValue?.kind() === "string" && contentValue && !extraKeys.length) {
+          parts.push(`"${unquote(nameValue.text())}": ${contentValue.text()}`);
+          continue;
+        }
+      }
+      findings.lost.push(`meta.${metaKey}`);
+    }
+    if (parts.length) {
+      findings.htmlProps.push({ name: "meta", valueText: `{ ${parts.join(", ")} }` });
     }
   }
 
@@ -1058,6 +1115,7 @@ class HtmlMigration {
     plan.commentLines.push(...findings.notes);
     if (findings.templateValue === null) plan.htmlEnabled = true;
     plan.htmlProps.push(...findings.htmlProps);
+    this.applyModuleScripts(plan, findings.scriptLoadingModule);
     // The plugin emitted `index.html` by default; native defaults to `[name].html`.
     plan.htmlFilename ??= findings.htmlFilename ?? '"index.html"';
     plan.pendingEntry = findings.pendingEntry;
