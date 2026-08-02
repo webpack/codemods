@@ -122,6 +122,27 @@ class CssMigration {
     return name !== null && REMOVABLE_LOADERS.has(name);
   }
 
+  // A `use` entry configuring css-loader's `modules` option (any value —
+  // `false` differs from the `css/auto` naming convention too).
+  private hasCssModulesOption(node: SgNode<Js>): boolean {
+    if (node.kind() === "binary_expression") {
+      const right = node.field("right");
+      return right !== null && this.hasCssModulesOption(right);
+    }
+    if (node.kind() === "ternary_expression") {
+      const consequence = node.field("consequence");
+      const alternative = node.field("alternative");
+      return (
+        (consequence !== null && this.hasCssModulesOption(consequence)) ||
+        (alternative !== null && this.hasCssModulesOption(alternative))
+      );
+    }
+    if (node.kind() !== "object" || loaderNameOf(node) !== "css-loader") return false;
+    const optionsValue = findPair(node, "options")?.field("value");
+    if (!optionsValue || optionsValue.kind() !== "object") return false;
+    return findPair(optionsValue, "modules") !== undefined;
+  }
+
   // The `new MiniCssExtractPlugin(...)` behind a plugins element, unwrapping
   // the `isProd && new Plugin()` / `isDev ? false : new Plugin()` guards.
   private pluginInstantiationOf(element: SgNode<Js>): SgNode<Js> | null {
@@ -178,6 +199,15 @@ class CssMigration {
       if (!removable.length) continue;
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
+      // css-loader's `modules` option applies to every matched file, while
+      // `css/auto` only treats `*.module.*` names as CSS modules — migrating a
+      // rule that also matches plain `.css` would silently change semantics.
+      if (
+        elements.some((element) => this.hasCssModulesOption(element)) &&
+        ruleMatchesFiles(ruleObject, ["/file.css"])
+      ) {
+        continue;
+      }
       const arrayNode = ruleObject.parent();
       if (!arrayNode) continue;
       const key = arrayNode.range().start.index;
