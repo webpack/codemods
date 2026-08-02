@@ -30,6 +30,14 @@ const PLUGIN_OPTION_TO_OUTPUT = new Map([
 ]);
 const CSS_SAMPLE_FILES = ["/file.css", "/file.module.css"];
 const PLAIN_CSS_SAMPLE = ["/file.css"];
+// css-loader `exportLocalsConvention` literals → native `exportsConvention`.
+const EXPORTS_CONVENTION_MAP = new Map([
+  ["asIs", "as-is"],
+  ["camelCase", "camel-case"],
+  ["camelCaseOnly", "camel-case-only"],
+  ["dashes", "dashes"],
+  ["dashesOnly", "dashes-only"],
+]);
 // Options native CSS covers on its own; any other option is flagged when dropped.
 const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "sourceMap", "esModule"]);
 const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
@@ -41,12 +49,26 @@ interface ConfigPlan {
   outputProps: { name: string; valueText: string }[];
 }
 
+interface RuleProp {
+  name: string;
+  valueText: string;
+}
+
+// Loader options translated into the surviving rule, plus the ones lost.
+interface OptionFindings {
+  lost: string[];
+  generatorProps: RuleProp[];
+  parserProps: RuleProp[];
+}
+
 interface UseSwap {
   pair: SgNode<Js>;
   ruleObject: SgNode<Js>;
   keptLoaders: SgNode<Js>[];
   filterSuffix: string;
   lostOptions: string[];
+  generatorProps: RuleProp[];
+  parserProps: RuleProp[];
 }
 
 interface RulesArrayWork {
@@ -58,6 +80,11 @@ interface RulesArrayWork {
 interface PluginRemoval {
   element: SgNode<Js>;
   instantiation: SgNode<Js>;
+}
+
+function dedupeProps(props: RuleProp[]): RuleProp[] {
+  const seen = new Set<string>();
+  return props.filter((prop) => !seen.has(prop.name) && seen.add(prop.name));
 }
 
 class CssMigration {
@@ -147,37 +174,111 @@ class CssMigration {
     return name !== null && REMOVABLE_LOADERS.has(name);
   }
 
-  // Dropped options native CSS cannot replicate, qualified per loader;
-  // `modules` counts only when the rule also matches plain `.css` files.
-  private lostLoaderOptions(node: SgNode<Js>, ruleObject: SgNode<Js>): string[] {
+  // Translate each loader option into the surviving rule's `generator`/`parser`
+  // when native CSS has an equivalent; everything else lands in `lost`.
+  private collectLoaderOptionFindings(
+    node: SgNode<Js>,
+    ruleObject: SgNode<Js>,
+    findings: OptionFindings,
+  ): void {
     const branches = guardBranchesOf(node);
     if (branches) {
-      return branches.flatMap((branch) => this.lostLoaderOptions(branch, ruleObject));
+      for (const branch of branches) this.collectLoaderOptionFindings(branch, ruleObject, findings);
+      return;
     }
-    if (node.kind() !== "object") return [];
+    if (node.kind() !== "object") return;
     const loaderValue = findPair(node, "loader")?.field("value");
     const isExtractLoader = Boolean(loaderValue && this.isPluginLoaderExpression(loaderValue));
     const loaderName = isExtractLoader ? EXTRACT_LOADER_NAME : loaderNameOf(node);
-    if (!loaderName) return [];
-    if (!isExtractLoader && !REMOVABLE_LOADERS.has(loaderName)) return [];
+    if (!loaderName) return;
+    if (!isExtractLoader && !REMOVABLE_LOADERS.has(loaderName)) return;
     const droppable =
       loaderName === "css-loader"
         ? DROPPABLE_CSS_LOADER_OPTIONS
         : DROPPABLE_INJECTION_LOADER_OPTIONS;
     const optionsPair = findPair(node, "options");
-    if (!optionsPair) return [];
+    if (!optionsPair) return;
     const optionsValue = optionsPair.field("value");
-    if (!optionsValue || optionsValue.kind() !== "object") return [`${loaderName}.options`];
-    const lost: string[] = [];
+    if (!optionsValue || optionsValue.kind() !== "object") {
+      findings.lost.push(`${loaderName}.options`);
+      return;
+    }
     for (const optionPair of pairsOf(optionsValue)) {
       const name = keyName(optionPair);
-      if (loaderName === "css-loader" && name === "modules") {
-        if (ruleMatchesFiles(ruleObject, PLAIN_CSS_SAMPLE)) lost.push(`${loaderName}.${name}`);
-      } else if (name === null || !droppable.has(name)) {
-        lost.push(`${loaderName}.${name ?? "options"}`);
+      const value = optionPair.field("value");
+      if (name !== null && droppable.has(name)) continue;
+      if (loaderName !== "css-loader" || name === null || !value) {
+        findings.lost.push(`${loaderName}.${name ?? "options"}`);
+        continue;
+      }
+      if (name === "url" || name === "import") {
+        // Booleans map to the rule's parser; filter functions have no equivalent.
+        if (value.kind() === "true" || value.kind() === "false") {
+          findings.parserProps.push({ name, valueText: value.text() });
+        } else {
+          findings.lost.push(`${loaderName}.${name}`);
+        }
+      } else if (name === "modules") {
+        this.collectCssModulesFindings(value, ruleObject, findings);
+      } else {
+        findings.lost.push(`${loaderName}.${name}`);
       }
     }
-    return lost;
+  }
+
+  // css-loader `modules` applies to every matched file, while `css/auto` only
+  // treats `*.module.*` names as CSS modules — on a rule that also matches
+  // plain `.css` the whole option is lost. Otherwise its sub-options map to
+  // the native generator/parser where an equivalent exists.
+  private collectCssModulesFindings(
+    value: SgNode<Js>,
+    ruleObject: SgNode<Js>,
+    findings: OptionFindings,
+  ): void {
+    if (ruleMatchesFiles(ruleObject, PLAIN_CSS_SAMPLE)) {
+      findings.lost.push("css-loader.modules");
+      return;
+    }
+    if (value.kind() === "true") return;
+    if (value.kind() !== "object") {
+      findings.lost.push("css-loader.modules");
+      return;
+    }
+    for (const subPair of pairsOf(value)) {
+      const subName = keyName(subPair);
+      const subValue = subPair.field("value");
+      if (!subName || !subValue) {
+        findings.lost.push("css-loader.modules");
+        continue;
+      }
+      switch (subName) {
+        case "auto":
+          break;
+        case "localIdentName":
+          findings.generatorProps.push({ name: "localIdentName", valueText: subValue.text() });
+          break;
+        case "exportOnlyLocals":
+          findings.generatorProps.push({ name: "exportsOnly", valueText: subValue.text() });
+          break;
+        case "namedExport":
+          findings.parserProps.push({ name: "namedExports", valueText: subValue.text() });
+          break;
+        case "exportLocalsConvention": {
+          const mapped =
+            subValue.kind() === "string"
+              ? EXPORTS_CONVENTION_MAP.get(unquote(subValue.text()))
+              : undefined;
+          if (mapped) {
+            findings.generatorProps.push({ name: "exportsConvention", valueText: `"${mapped}"` });
+          } else {
+            findings.lost.push("css-loader.modules.exportLocalsConvention");
+          }
+          break;
+        }
+        default:
+          findings.lost.push(`css-loader.modules.${subName}`);
+      }
+    }
   }
 
   // The plugin instantiation behind a plugins element, unwrapping guards.
@@ -241,9 +342,13 @@ class CssMigration {
       // fragments pushed into another tool's config (Storybook, craco, …).
       if (!arrayNode || arrayNode.kind() !== "array") continue;
       if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
-      const lostOptions = [
-        ...new Set(elements.flatMap((element) => this.lostLoaderOptions(element, ruleObject))),
-      ];
+      const findings: OptionFindings = { lost: [], generatorProps: [], parserProps: [] };
+      for (const element of elements) {
+        this.collectLoaderOptionFindings(element, ruleObject, findings);
+      }
+      const lostOptions = [...new Set(findings.lost)];
+      const generatorProps = dedupeProps(findings.generatorProps);
+      const parserProps = dedupeProps(findings.parserProps);
       const key = arrayNode.range().start.index;
       let work = rulesWork.get(key);
       if (!work) {
@@ -254,8 +359,15 @@ class CssMigration {
         const name = keyName(rulePair);
         return name === "test" || name === "use";
       });
-      // A rule with lost options stays as a swap so the comment has a home.
-      if (trivialRule && !kept.length && !lostOptions.length) {
+      // A rule with lost or translated options stays as a swap so the comment
+      // and the generator/parser properties have a home.
+      const survives =
+        !trivialRule ||
+        kept.length > 0 ||
+        lostOptions.length > 0 ||
+        generatorProps.length > 0 ||
+        parserProps.length > 0;
+      if (!survives) {
         work.removedElements.push(ruleObject);
       } else {
         work.swaps.push({
@@ -264,6 +376,8 @@ class CssMigration {
           keptLoaders: kept,
           filterSuffix: filterSuffixOf(originalValue, value),
           lostOptions,
+          generatorProps,
+          parserProps,
         });
       }
     }
@@ -302,19 +416,25 @@ class CssMigration {
       const message = `Removed loader options without a native CSS equivalent: ${swap.lostOptions.join(", ")}`;
       commentPrefix = multiline ? `// ${message}\n${indent}` : `/* ${message} */ `;
     }
+    const separator = multiline ? `,\n${indent}` : ", ";
+    let replacement = `${commentPrefix}`;
     if (swap.keptLoaders.length) {
       // Guarded entries keep the original `.filter(...)` for their falsy branch.
       const keptTexts = swap.keptLoaders.map((loader) => loader.text());
       const keepsGuard = swap.keptLoaders.some((loader) => guardBranchesOf(loader) !== null);
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
-      const separator = multiline ? `,\n${indent}` : ", ";
-      this.editor.replace(
-        swap.pair,
-        `${commentPrefix}use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
-      );
-    } else {
-      this.editor.replace(swap.pair, `${commentPrefix}type: "css/auto"`);
+      replacement += `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}`;
     }
+    replacement += 'type: "css/auto"';
+    for (const [key, props] of [
+      ["generator", swap.generatorProps],
+      ["parser", swap.parserProps],
+    ] as const) {
+      if (!props.length) continue;
+      const texts = props.map((prop) => `${prop.name}: ${prop.valueText}`);
+      replacement += `${separator}${key}: { ${texts.join(", ")} }`;
+    }
+    this.editor.replace(swap.pair, replacement);
     // A surviving rule that matches `.css` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, CSS_SAMPLE_FILES)) return;
     const config = findConfigObjectFor(swap.pair);

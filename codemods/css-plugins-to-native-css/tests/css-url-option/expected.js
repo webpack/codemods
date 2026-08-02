@@ -6,8 +6,8 @@ module.exports = {
     rules: [
       {
         test: /\.css$/,
-        // Removed loader options without a native CSS equivalent: css-loader.url, css-loader.import
         type: "css/auto",
+        parser: { url: false, import: false },
       },
     ],
   },
