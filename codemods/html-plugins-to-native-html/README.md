@@ -12,6 +12,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 - Maps plugin options to their `output.html` counterparts: `title`, `meta` (string values), `favicon`, `base`, `inject` (`"body"`/`"head"`/`false`; `true` is the native default), and `scriptLoading: "blocking"` (`"defer"` is the native default).
 - Drops options the native pipeline covers on its own (`minify: true`/`"auto"`, `cache`, `showErrors`, `chunksSortMode`, `chunks: "all"`, `publicPath: "auto"`) silently.
 - Options without a native equivalent (`hash`, a `minify` object, `chunks` arrays, `templateContent`, `templateParameters`, …) are dropped with a `// Removed html-webpack-plugin options without a native HTML equivalent: …` comment so you can review the behavior change; a manual migration path is appended where one exists.
+- Migrates `HtmlWebpackPlugin.getHooks(...)` taps to the native `webpack.html.HtmlModulesPlugin.getCompilationHooks(...)` stage covering the same moment: `alterAssetTags`/`alterAssetTagGroups` → `transformTags`, `beforeEmit` → `transformHtml`, `afterEmit` → `htmlEmitted`. The native stages take different arguments (`transformTags` hands you mutable tag descriptors instead of `data.assetTags`/head-body arrays; `transformHtml` is a waterfall on the HTML string instead of `data.html`), so each renamed tap gets a `// Review: …` comment describing the new signature — review the callback body.
 
 ### `html-loader`
 
@@ -27,7 +28,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 ### What is left untouched
 
 - Configurations with **several** plugin instances (multi-page setups with `chunks` per page): they map to per-entry `html` descriptors, but doing that safely needs a human — see [the entry `html` option](https://webpack.js.org/concepts/entry-points/).
-- Files that tap `HtmlWebpackPlugin.getHooks(...)`: every native hook takes different arguments, so tap bodies need rewriting by hand. The native counterparts on `webpack.html.HtmlModulesPlugin.getCompilationHooks(compilation)` are: `alterAssetTags`/`alterAssetTagGroups` → `transformTags` (mutable tag descriptors; move tags via `injectTo` instead of the head/body arrays) plus `injectTags` for adding tags; `beforeEmit` → `transformHtml` (waterfall on the HTML string instead of `data.html`); `afterEmit` → `htmlEmitted`; `beforeAssetTagGeneration` and `afterTemplateExecution` have no equivalent (webpack builds the tags and runs the parser template itself).
+- Files that tap `beforeAssetTagGeneration` or `afterTemplateExecution` via `HtmlWebpackPlugin.getHooks(...)`: those stages have no native equivalent (webpack builds the tags and runs the parser template itself).
 - Plugin instantiations whose options are not an object literal.
 
 ## Usage

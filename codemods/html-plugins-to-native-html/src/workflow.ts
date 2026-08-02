@@ -2,6 +2,7 @@ import type Js from "@codemod.com/jssg-types/langs/javascript";
 import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import {
   ConfigEditor,
+  addImport,
   cascadeRemovalTarget,
   collectModuleBindings,
   filterSuffixOf,
@@ -46,6 +47,26 @@ const LOST_OPTION_HINTS = new Map([
 
 type FsModule = typeof import("node:fs");
 type PathModule = typeof import("node:path");
+
+// Plugin hooks renamed to the native `HtmlModulesPlugin.getCompilationHooks`
+// stage covering the same moment; arguments differ, hence the review comments.
+const HOOK_RENAMES = new Map([
+  ["alterAssetTags", "transformTags"],
+  ["alterAssetTagGroups", "transformTags"],
+  ["beforeEmit", "transformHtml"],
+  ["afterEmit", "htmlEmitted"],
+]);
+const HOOK_REVIEW_COMMENTS = new Map([
+  [
+    "transformTags",
+    "transformTags receives mutable tag descriptors (tags, { outputName, html }); mutate attrs/injectTo/remove, add tags via the injectTags hook",
+  ],
+  ["transformHtml", "transformHtml receives (html, { outputName }) and must return the html string"],
+  ["htmlEmitted", "htmlEmitted receives ({ outputName }); nothing to return"],
+]);
+// Stages webpack handles itself — a tap on them cannot be carried over, so
+// files using them are left untouched.
+const UNMAPPABLE_HOOKS = new Set(["beforeAssetTagGeneration", "afterTemplateExecution"]);
 
 interface HtmlProp {
   name: string;
@@ -109,6 +130,10 @@ class HtmlMigration {
   private readonly configFileName: string;
   private readonly fileSystem: FsModule | null;
   private readonly pathModule: PathModule | null;
+  private pluginMigrated = false;
+  private pluginRetained = false;
+  // Binding statements rewritten in place (e.g. into the `html` import).
+  private readonly repurposedStatements = new Set<number>();
 
   constructor(root: SgRoot<Js>, fileSystem: FsModule | null, pathModule: PathModule | null) {
     this.editor = new ConfigEditor(root.root());
@@ -120,9 +145,9 @@ class HtmlMigration {
   }
 
   run(): string | null {
-    // Hook taps (`getHooks`, `getCompilationHooks`) have no native counterpart
-    // that keeps the tap working — leave such files for manual migration.
-    if (this.usesPluginHooks()) return null;
+    // Taps on stages the native pipeline doesn't expose can't be carried over
+    // — leave such files for manual migration.
+    if (this.usesUnmappableHooks()) return null;
     const usePairs: SgNode<Js>[] = [];
     const loaderPairs: SgNode<Js>[] = [];
     const pluginsPairs: SgNode<Js>[] = [];
@@ -136,21 +161,33 @@ class HtmlMigration {
     if (this.pluginNames.size) {
       for (const pair of pluginsPairs) this.transformPluginsPair(pair);
     }
+    this.migrateHooks();
     this.planConfigInsertions();
     this.editor.finalizeRemovals();
     if (!this.editor.hasEdits) return null;
     for (const binding of this.pluginBindings) {
+      if (this.repurposedStatements.has(binding.statement.range().start.index)) continue;
       this.editor.removeBindingIfUnused(binding);
     }
     return this.editor.commit();
   }
 
-  private usesPluginHooks(): boolean {
+  // `X.getHooks(...)` / `X.getCompilationHooks(...)` receivers on the plugin.
+  private pluginHookReceivers(): SgNode<Js>[] {
+    const receivers: SgNode<Js>[] = [];
     for (const node of this.editor.rootNode.findAll({ rule: { kind: "member_expression" } })) {
       const property = node.field("property")?.text();
       if (property !== "getHooks" && property !== "getCompilationHooks") continue;
       const objectPart = node.field("object");
-      if (objectPart && this.pluginNames.has(objectPart.text())) return true;
+      if (objectPart && this.pluginNames.has(objectPart.text())) receivers.push(node);
+    }
+    return receivers;
+  }
+
+  private usesUnmappableHooks(): boolean {
+    if (!this.pluginNames.size || !this.pluginHookReceivers().length) return false;
+    for (const node of this.editor.rootNode.findAll({ rule: { kind: "property_identifier" } })) {
+      if (UNMAPPABLE_HOOKS.has(node.text())) return true;
     }
     return false;
   }
@@ -371,18 +408,110 @@ class HtmlMigration {
     }
     // Several instances mean several pages (`chunks` per page) — per-entry
     // `html` descriptors cover it, but mapping them safely needs a human.
-    if (instances.length !== 1) return;
+    if (instances.length !== 1) {
+      if (instances.length) this.pluginRetained = true;
+      return;
+    }
     const { element, instantiation } = instances[0];
     const argumentsNode = instantiation.field("arguments");
     const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
     // A non-literal options argument (variable, spread) can't be understood.
-    if (optionsObject && optionsObject.kind() !== "object") return;
+    if (optionsObject && optionsObject.kind() !== "object") {
+      this.pluginRetained = true;
+      return;
+    }
     const findings = this.collectFindings(optionsObject);
     if (elements.length === 1) this.editor.markForRemoval(pluginsPair);
     else this.editor.markForRemoval(element);
     if (findings.templateValue !== null) this.migrateEntry(configObject, findings);
     else this.noteMultiPageEntry(configObject, findings);
     this.mergeIntoPlan(configObject, findings);
+    this.pluginMigrated = true;
+  }
+
+  // ---------- compilation hooks ----------
+
+  // Retarget `HtmlWebpackPlugin.getHooks(...)` taps to the native
+  // `HtmlModulesPlugin.getCompilationHooks(...)` stages. Only done when this
+  // file's plugin setup was actually migrated and no instance survives.
+  private migrateHooks(): void {
+    if (!this.pluginMigrated || this.pluginRetained) return;
+    const receivers = this.pluginHookReceivers();
+    if (!receivers.length) return;
+    const nativeReceiver = this.nativeHooksReceiver();
+    for (const node of receivers) {
+      this.editor.replace(node, `${nativeReceiver}.getCompilationHooks`);
+    }
+    const rootNode = this.editor.rootNode;
+    // One review comment per statement holding a renamed tap.
+    const commentedStatements = new Set<string>();
+    for (const property of rootNode.findAll({ rule: { kind: "property_identifier" } })) {
+      const renamed = HOOK_RENAMES.get(property.text());
+      if (!renamed) continue;
+      this.editor.replace(property, renamed);
+      const statement = this.statementOf(property);
+      const review = HOOK_REVIEW_COMMENTS.get(renamed);
+      if (!statement || !review) continue;
+      const key = `${statement.range().start.index}:${renamed}`;
+      if (commentedStatements.has(key)) continue;
+      commentedStatements.add(key);
+      const lineStart =
+        this.editor.source.lastIndexOf("\n", statement.range().start.index - 1) + 1;
+      const indent = lineIndent(this.editor.source, statement.range().start.index);
+      this.editor.addEdit({
+        startPos: lineStart,
+        endPos: lineStart,
+        insertedText: `${indent}// Review: ${review}\n`,
+      });
+    }
+    for (const shorthand of rootNode.findAll({
+      rule: { kind: "shorthand_property_identifier_pattern" },
+    })) {
+      const renamed = HOOK_RENAMES.get(shorthand.text());
+      // Keep the local variable name; only the destructured key changes.
+      if (renamed) this.editor.replace(shorthand, `${renamed}: ${shorthand.text()}`);
+    }
+  }
+
+  // The statement carrying a node, for placing a comment line above it.
+  private statementOf(node: SgNode<Js>): SgNode<Js> | null {
+    let current: SgNode<Js> | null = node;
+    while (current) {
+      const parent: SgNode<Js> | null = current.parent();
+      if (!parent) return null;
+      const kind = parent.kind();
+      if (kind === "statement_block" || kind === "program" || kind === "class_body") {
+        return current;
+      }
+      current = parent;
+    }
+    return null;
+  }
+
+  // Existing webpack binding, or an `html` import — rewriting the plugin's own
+  // import statement in place when possible (a separate added import would
+  // land inside the removed statement's range and be dropped).
+  private nativeHooksReceiver(): string {
+    const webpackBindings = collectModuleBindings(this.editor.rootNode, "webpack");
+    if (webpackBindings.length) return `${webpackBindings[0].name}.html.HtmlModulesPlugin`;
+    const binding = this.pluginBindings[0];
+    if (binding) {
+      const isEsm = binding.statement.kind() === "import_statement";
+      this.editor.replace(
+        binding.statement,
+        isEsm ? 'import { html } from "webpack";' : 'const { html } = require("webpack");',
+      );
+      this.repurposedStatements.add(binding.statement.range().start.index);
+    } else {
+      const edit = addImport(this.editor.rootNode as SgNode<Js, "program">, {
+        type: "named",
+        specifiers: [{ name: "html" }],
+        from: "webpack",
+        moduleType: "cjs",
+      });
+      if (edit) this.editor.addEdit(edit);
+    }
+    return "html.HtmlModulesPlugin";
   }
 
   // ---------- option mapping ----------
