@@ -39,13 +39,14 @@ const EXPORTS_CONVENTION_MAP = new Map([
   ["dashesOnly", "dashes-only"],
 ]);
 // Options native CSS covers on its own; any other option is flagged when dropped.
-const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "sourceMap", "esModule"]);
+const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "esModule"]);
 const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
 
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
   config: SgNode<Js>;
   needsExperimentsCss: boolean;
+  disableCssSourceMap: boolean;
   outputProps: { name: string; valueText: string }[];
 }
 
@@ -59,6 +60,7 @@ interface OptionFindings {
   lost: string[];
   generatorProps: RuleProp[];
   parserProps: RuleProp[];
+  cssSourceMapOff: boolean;
 }
 
 interface UseSwap {
@@ -211,7 +213,12 @@ class CssMigration {
         findings.lost.push(`${loaderName}.${name ?? "options"}`);
         continue;
       }
-      if (name === "url" || name === "import") {
+      if (name === "sourceMap") {
+        // `true` means "follow devtool", which is native behavior; `false`
+        // becomes a per-type `devtool` entry on the enclosing config.
+        if (value.kind() === "false") findings.cssSourceMapOff = true;
+        else if (value.kind() !== "true") findings.lost.push(`${loaderName}.sourceMap`);
+      } else if (name === "url" || name === "import") {
         // Booleans map to the rule's parser; filter functions have no equivalent.
         if (value.kind() === "true" || value.kind() === "false") {
           findings.parserProps.push({ name, valueText: value.text() });
@@ -342,9 +349,19 @@ class CssMigration {
       // fragments pushed into another tool's config (Storybook, craco, …).
       if (!arrayNode || arrayNode.kind() !== "array") continue;
       if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
-      const findings: OptionFindings = { lost: [], generatorProps: [], parserProps: [] };
+      const findings: OptionFindings = {
+        lost: [],
+        generatorProps: [],
+        parserProps: [],
+        cssSourceMapOff: false,
+      };
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
+      }
+      if (findings.cssSourceMapOff) {
+        const config = findConfigObjectFor(pair);
+        if (config) this.planFor(config).disableCssSourceMap = true;
+        else findings.lost.push("css-loader.sourceMap");
       }
       const lostOptions = [...new Set(findings.lost)];
       const generatorProps = dedupeProps(findings.generatorProps);
@@ -554,7 +571,7 @@ class CssMigration {
     const key = config.range().start.index;
     let plan = this.configPlans.get(key);
     if (!plan) {
-      plan = { config, needsExperimentsCss: false, outputProps: [] };
+      plan = { config, needsExperimentsCss: false, disableCssSourceMap: false, outputProps: [] };
       this.configPlans.set(key, plan);
     }
     return plan;
@@ -569,6 +586,7 @@ class CssMigration {
       if (plan.outputProps.length) {
         this.planObjectProps(plan.config, "output", plan.outputProps, topProperties);
       }
+      this.planCssDevtool(plan);
       if (topProperties.length) {
         // A fully-emptied config keeps its braces open for these properties.
         this.editor.keepBracesOpen(plan.config);
@@ -577,6 +595,18 @@ class CssMigration {
         );
       }
     }
+  }
+
+  // css-loader's `sourceMap: false` maps to a per-type `devtool` entry. With
+  // no devtool (or a non-string form) there is nothing to disable safely.
+  private planCssDevtool(plan: ConfigPlan): void {
+    if (!plan.disableCssSourceMap) return;
+    const value = findPair(plan.config, "devtool")?.field("value");
+    if (!value || value.kind() !== "string") return;
+    this.editor.replace(
+      value,
+      `[{ type: "javascript", use: ${value.text()} }, { type: "css", use: false }]`,
+    );
   }
 
   // Insert props into the config's `key` object, creating it when absent; an
