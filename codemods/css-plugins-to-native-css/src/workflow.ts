@@ -65,6 +65,8 @@ interface OptionFindings {
   cssPublicPath: string | null;
   // Module type overriding the default `css/auto` (e.g. `css/global`).
   cssType: string | null;
+  // Props for the enclosing config's `output` (e.g. crossOriginLoading).
+  outputProps: RuleProp[];
 }
 
 interface UseSwap {
@@ -221,6 +223,10 @@ class CssMigration {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
       if (name !== null && droppable.has(name)) continue;
+      if (loaderName === "style-loader" && name === "attributes" && value) {
+        this.collectStyleAttributes(value, findings);
+        continue;
+      }
       if (loaderName === EXTRACT_LOADER_NAME && name === "emit" && value) {
         // `emit: false` (SSR) maps to the native exports-only generator.
         if (value.kind() === "false") {
@@ -341,6 +347,35 @@ class CssMigration {
         }
         default:
           findings.lost.push(`css-loader.modules.${subName}`);
+      }
+    }
+  }
+
+  // Native css injection reads `output.crossOriginLoading`; `nonce` is served
+  // by the `__webpack_nonce__` runtime global, which config cannot set.
+  private collectStyleAttributes(value: SgNode<Js>, findings: OptionFindings): void {
+    if (value.kind() !== "object") {
+      findings.lost.push("style-loader.attributes");
+      return;
+    }
+    for (const attribute of pairsOf(value)) {
+      const name = keyName(attribute);
+      const attrValue = attribute.field("value");
+      const literal = attrValue && attrValue.kind() === "string" ? unquote(attrValue.text()) : null;
+      if (name === "crossorigin" && (literal === "anonymous" || literal === "use-credentials")) {
+        findings.outputProps.push({ name: "crossOriginLoading", valueText: `"${literal}"` });
+      } else {
+        findings.lost.push(`style-loader.attributes.${name ?? "attributes"}`);
+      }
+    }
+  }
+
+  private mergeOutputProps(plan: ConfigPlan | null, findings: OptionFindings): void {
+    for (const prop of findings.outputProps) {
+      if (!plan) {
+        findings.lost.push("style-loader.attributes.crossorigin");
+      } else if (!plan.outputProps.some((existing) => existing.name === prop.name)) {
+        plan.outputProps.push(prop);
       }
     }
   }
@@ -466,6 +501,7 @@ class CssMigration {
         cssSourceMapOff: false,
         cssPublicPath: null,
         cssType: null,
+        outputProps: [],
       };
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
@@ -478,6 +514,7 @@ class CssMigration {
       } else if (findings.cssSourceMapOff) {
         findings.lost.push("css-loader.sourceMap");
       }
+      this.mergeOutputProps(plan, findings);
       const key = arrayNode.range().start.index;
       let work = rulesWork.get(key);
       if (!work) {
@@ -530,6 +567,7 @@ class CssMigration {
         cssSourceMapOff: false,
         cssPublicPath: null,
         cssType: null,
+        outputProps: [],
       };
       this.collectLoaderOptionFindings(ruleObject, ruleObject, findings);
       const config = findConfigObjectFor(pair);
@@ -540,6 +578,7 @@ class CssMigration {
       } else if (findings.cssSourceMapOff) {
         findings.lost.push("css-loader.sourceMap");
       }
+      this.mergeOutputProps(plan, findings);
       const key = arrayNode.range().start.index;
       let work = rulesWork.get(key);
       if (!work) {
