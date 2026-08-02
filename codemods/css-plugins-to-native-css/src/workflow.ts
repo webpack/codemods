@@ -219,11 +219,14 @@ class CssMigration {
       if (!removable.length) continue;
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
+      const arrayNode = ruleObject.parent();
+      // Only touch rules the file demonstrably owns as webpack config — never
+      // fragments pushed into another tool's config (Storybook, craco, …).
+      if (!arrayNode || arrayNode.kind() !== "array") continue;
+      if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
       const lostOptions = [
         ...new Set(elements.flatMap((element) => this.lostLoaderOptions(element, ruleObject))),
       ];
-      const arrayNode = ruleObject.parent();
-      if (!arrayNode) continue;
       const key = arrayNode.range().start.index;
       let work = rulesWork.get(key);
       if (!work) {
@@ -235,7 +238,7 @@ class CssMigration {
         return name === "test" || name === "use";
       });
       // A rule with lost options stays as a swap so the comment has a home.
-      if (trivialRule && !kept.length && !lostOptions.length && arrayNode.kind() === "array") {
+      if (trivialRule && !kept.length && !lostOptions.length) {
         work.removedElements.push(ruleObject);
       } else {
         work.swaps.push({
@@ -248,6 +251,18 @@ class CssMigration {
       }
     }
     return rulesWork;
+  }
+
+  // Webpack owns the rule when its array hangs on a `rules`/`oneOf` pair, the
+  // config has a `module` ancestor, or the file imports the extract plugin.
+  private isWebpackRuleContext(usePair: SgNode<Js>, arrayNode: SgNode<Js>): boolean {
+    const listPair = arrayNode.parent();
+    if (listPair && listPair.kind() === "pair") {
+      const name = keyName(listPair);
+      if (name === "rules" || name === "oneOf") return true;
+    }
+    if (this.pluginNames.size > 0) return true;
+    return findConfigObjectFor(usePair) !== null;
   }
 
   // Climb while the removal would leave an empty container behind, so a

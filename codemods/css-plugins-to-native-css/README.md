@@ -16,6 +16,8 @@ Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader
 
 The remaining `MiniCssExtractPlugin` options have **no native equivalent** and are dropped: `ignoreOrder`, `insert`, `attributes`, `linkType`, `runtime`, and `experimentalUseImportModule`. Review your build if you relied on them.
 
+Only rules the file demonstrably owns as webpack config are transformed (a `rules`/`oneOf` array, a `module` block, or an import of `mini-css-extract-plugin`). Rule fragments pushed into another tool's webpack config — Storybook's `webpackFinal`, craco, and similar — are never modified: those tools ship their own webpack, where a partial migration would break the build.
+
 ## Usage
 
 ```sh
