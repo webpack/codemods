@@ -3,9 +3,9 @@ import type Json from "@codemod.com/jssg-types/langs/json";
 import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import { ConfigEditor, findPair, keyName, namedChildren, pairsOf } from "@webpack/codemod-utils";
 
-// Package replaced by native HTML; review your lockfile if other tooling
-// (Storybook, tests, …) still relies on it.
-const REMOVED_PACKAGES = new Set(["html-webpack-plugin"]);
+// Packages replaced by native HTML; review your lockfile if other tooling
+// (Storybook, tests, …) still relies on them.
+const REMOVED_PACKAGES = new Set(["html-webpack-plugin", "html-loader"]);
 const DEPENDENCY_KEYS = ["dependencies", "devDependencies"];
 
 async function transform(root: SgRoot<Json>): Promise<string | null> {

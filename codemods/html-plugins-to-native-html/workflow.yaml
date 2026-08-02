@@ -9,7 +9,7 @@ nodes:
     runtime:
       type: direct
     steps:
-      - name: Migrate html-webpack-plugin to webpack's native HTML support (experiments.html)
+      - name: Migrate html-webpack-plugin and html-loader rules to webpack's native HTML support (experiments.html)
         js-ast-grep:
           js_file: src/workflow.ts
           base_path: .
@@ -25,7 +25,7 @@ nodes:
           exclude:
             - "**/node_modules/**"
           language: typescript
-      - name: Remove html-webpack-plugin from package.json
+      - name: Remove html-webpack-plugin and html-loader from package.json
         js-ast-grep:
           js_file: src/remove-dependencies.ts
           base_path: .

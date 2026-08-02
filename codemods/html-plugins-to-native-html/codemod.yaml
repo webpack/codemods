@@ -1,7 +1,7 @@
 schema_version: "1.0"
 name: "@webpack/html-plugins-to-native-html"
 version: "0.0.0"
-description: Migrate html-webpack-plugin to webpack's native HTML support (experiments.html)
+description: Migrate html-webpack-plugin and html-loader rules to webpack's native HTML support (experiments.html)
 author: bjohansebas (Sebastian Beltran)
 license: MIT
 workflow: workflow.yaml
