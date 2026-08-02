@@ -27,7 +27,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 ### What is left untouched
 
 - Configurations with **several** plugin instances (multi-page setups with `chunks` per page): they map to per-entry `html` descriptors, but doing that safely needs a human — see [the entry `html` option](https://webpack.js.org/concepts/entry-points/).
-- Files that tap `HtmlWebpackPlugin.getHooks(...)`: the taps have no drop-in native counterpart (native hooks live on `HtmlModulesPlugin.getCompilationHooks(...)` with different stages).
+- Files that tap `HtmlWebpackPlugin.getHooks(...)`: every native hook takes different arguments, so tap bodies need rewriting by hand. The native counterparts on `webpack.html.HtmlModulesPlugin.getCompilationHooks(compilation)` are: `alterAssetTags`/`alterAssetTagGroups` → `transformTags` (mutable tag descriptors; move tags via `injectTo` instead of the head/body arrays) plus `injectTags` for adding tags; `beforeEmit` → `transformHtml` (waterfall on the HTML string instead of `data.html`); `afterEmit` → `htmlEmitted`; `beforeAssetTagGeneration` and `afterTemplateExecution` have no equivalent (webpack builds the tags and runs the parser template itself).
 - Plugin instantiations whose options are not an object literal.
 
 ## Usage
