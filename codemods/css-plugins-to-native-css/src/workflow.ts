@@ -209,6 +209,12 @@ class CssMigration {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
       if (name !== null && droppable.has(name)) continue;
+      if (loaderName === EXTRACT_LOADER_NAME && name === "publicPath" && value) {
+        if (!this.isRedundantExtractPublicPath(value, ruleObject)) {
+          findings.lost.push(`${EXTRACT_LOADER_NAME}.publicPath`);
+        }
+        continue;
+      }
       if (loaderName !== "css-loader" || name === null || !value) {
         findings.lost.push(`${loaderName}.${name ?? "options"}`);
         continue;
@@ -292,6 +298,24 @@ class CssMigration {
           findings.lost.push(`css-loader.modules.${subName}`);
       }
     }
+  }
+
+  // The loader `publicPath` is redundant when it is the extraction-relative
+  // workaround ("./", "../") native CSS does not need, or when it just repeats
+  // the config's own `output.publicPath`.
+  private isRedundantExtractPublicPath(value: SgNode<Js>, ruleObject: SgNode<Js>): boolean {
+    if (value.kind() !== "string") return false;
+    const text = unquote(value.text());
+    if (text.startsWith(".")) return true;
+    const config = findConfigObjectFor(ruleObject);
+    const outputValue = config ? findPair(config, "output")?.field("value") : undefined;
+    const publicPath =
+      outputValue && outputValue.kind() === "object"
+        ? findPair(outputValue, "publicPath")?.field("value")
+        : undefined;
+    return Boolean(
+      publicPath && publicPath.kind() === "string" && unquote(publicPath.text()) === text,
+    );
   }
 
   // The plugin instantiation behind a plugins element, unwrapping guards.
