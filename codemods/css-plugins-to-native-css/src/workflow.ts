@@ -57,6 +57,7 @@ const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
 interface ConfigPlan {
   config: SgNode<Js>;
   needsExperimentsCss: boolean;
+  needsLayers: boolean;
   cssLoaderRules: number;
   sourceMapOffRules: number;
   outputProps: { name: string; valueText: string }[];
@@ -78,6 +79,8 @@ interface OptionFindings {
   cssType: string | null;
   // Props for the enclosing config's `output` (e.g. crossOriginLoading).
   outputProps: RuleProp[];
+  // Rule-level `layer` carried over from the extract loader's option.
+  layerValue: string | null;
 }
 
 interface UseSwap {
@@ -90,6 +93,7 @@ interface UseSwap {
   parserProps: RuleProp[];
   cssPublicPath: string | null;
   cssType: string | null;
+  layerValue: string | null;
   trivial: boolean;
   sourceMapOff: boolean;
   plan: ConfigPlan | null;
@@ -236,6 +240,12 @@ class CssMigration {
       if (name !== null && droppable.has(name)) continue;
       if (loaderName === "style-loader" && name === "attributes" && value) {
         this.collectStyleAttributes(value, findings);
+        continue;
+      }
+      if (loaderName === EXTRACT_LOADER_NAME && name === "layer" && value) {
+        // Same semantics as the native rule-level `layer` (experiments.layers).
+        if (findPair(ruleObject, "layer")) findings.lost.push(`${EXTRACT_LOADER_NAME}.layer`);
+        else findings.layerValue ??= value.text();
         continue;
       }
       if (loaderName === EXTRACT_LOADER_NAME && name === "emit" && value) {
@@ -389,6 +399,14 @@ class CssMigration {
         plan.outputProps.push(prop);
       }
     }
+    if (findings.layerValue !== null) {
+      // Rule-level `layer` needs experiments.layers on the enclosing config.
+      if (plan) plan.needsLayers = true;
+      else {
+        findings.layerValue = null;
+        findings.lost.push(`${EXTRACT_LOADER_NAME}.layer`);
+      }
+    }
   }
 
   private hasIssuerRule(arrayNode: SgNode<Js> | null, issuerText: string): boolean {
@@ -455,7 +473,8 @@ class CssMigration {
           entry.generatorProps.length > 0 ||
           entry.parserProps.length > 0 ||
           entry.cssPublicPath !== null ||
-          entry.cssType !== null;
+          entry.cssType !== null ||
+          entry.layerValue !== null;
         if (survives) swaps.push(entry);
         else removed.push(entry.ruleObject);
       }
@@ -513,6 +532,7 @@ class CssMigration {
         cssPublicPath: null,
         cssType: null,
         outputProps: [],
+        layerValue: null,
       };
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
@@ -546,6 +566,7 @@ class CssMigration {
         parserProps: dedupeProps(findings.parserProps),
         cssPublicPath: findings.cssPublicPath,
         cssType: findings.cssType,
+        layerValue: findings.layerValue,
         trivial,
         sourceMapOff: findings.cssSourceMapOff,
         plan,
@@ -579,6 +600,7 @@ class CssMigration {
         cssPublicPath: null,
         cssType: null,
         outputProps: [],
+        layerValue: null,
       };
       this.collectLoaderOptionFindings(ruleObject, ruleObject, findings);
       const config = findConfigObjectFor(pair);
@@ -610,6 +632,7 @@ class CssMigration {
         parserProps: dedupeProps(findings.parserProps),
         cssPublicPath: findings.cssPublicPath,
         cssType: findings.cssType,
+        layerValue: findings.layerValue,
         trivial,
         sourceMapOff: findings.cssSourceMapOff,
         plan,
@@ -673,6 +696,7 @@ class CssMigration {
       replacement += `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}`;
     }
     replacement += `type: "${swap.cssType ?? "css/auto"}"`;
+    if (swap.layerValue !== null) replacement += `${separator}layer: ${swap.layerValue}`;
     for (const [key, props] of [
       ["generator", swap.generatorProps],
       ["parser", swap.parserProps],
@@ -818,6 +842,7 @@ class CssMigration {
       plan = {
         config,
         needsExperimentsCss: false,
+        needsLayers: false,
         cssLoaderRules: 0,
         sourceMapOffRules: 0,
         outputProps: [],
@@ -830,8 +855,11 @@ class CssMigration {
   private planConfigInsertions(): void {
     for (const plan of this.configPlans.values()) {
       const topProperties: ((indent: string, unit: string) => string)[] = [];
-      if (plan.needsExperimentsCss) {
-        this.planObjectProps(plan.config, "experiments", [{ name: "css", valueText: "true" }], topProperties);
+      const experimentProps: RuleProp[] = [];
+      if (plan.needsExperimentsCss) experimentProps.push({ name: "css", valueText: "true" });
+      if (plan.needsLayers) experimentProps.push({ name: "layers", valueText: "true" });
+      if (experimentProps.length) {
+        this.planObjectProps(plan.config, "experiments", experimentProps, topProperties);
       }
       if (plan.outputProps.length) {
         this.planObjectProps(plan.config, "output", plan.outputProps, topProperties);
