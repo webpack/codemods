@@ -102,10 +102,17 @@ class CssMigration {
     }
     if (!objectPart) return false;
     if (objectPart.kind() === "identifier") return this.pluginNames.has(objectPart.text());
-    return (
-      objectPart.kind() === "call_expression" &&
-      /^require\(\s*["'`]mini-css-extract-plugin["'`]\s*\)$/.test(objectPart.text())
-    );
+    return this.isInlinePluginRequire(objectPart);
+  }
+
+  // An inline `require("mini-css-extract-plugin")` call expression.
+  private isInlinePluginRequire(node: SgNode<Js>): boolean {
+    if (node.kind() !== "call_expression") return false;
+    const callee = node.field("function");
+    if (!callee || callee.kind() !== "identifier" || callee.text() !== "require") return false;
+    const argumentsNode = node.field("arguments");
+    const args = argumentsNode ? namedChildren(argumentsNode) : [];
+    return args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === PLUGIN_MODULE;
   }
 
   // A `use` entry replaceable by native CSS, unwrapping dev/prod guards.
