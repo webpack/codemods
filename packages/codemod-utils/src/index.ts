@@ -160,27 +160,40 @@ export class ConfigEditor {
     }
   }
 
-  // Insert properties right after an object's opening brace, matching its layout.
+  // Insert properties into an object, matching its layout. They go right after
+  // the opening brace — except when the object contains spreads, where a later
+  // spread could override them: then they go after the last property instead.
   insertIntoObject(
     objectNode: SgNode<Js>,
     buildProperties: (indent: string, indentUnit: string) => string[],
   ): void {
-    const insertAt = objectNode.range().start.index + 1;
     const properties = namedChildren(objectNode);
     const multiline = objectNode.text().includes("\n") && properties.length > 0;
+    const indent = multiline ? lineIndent(this.source, properties[0].range().start.index) : "";
+    // One indentation step: the first property's indent minus the object's own.
+    const objectIndent = lineIndent(this.source, objectNode.range().start.index);
+    const indentUnit = indent.slice(objectIndent.length) || (indent.includes("\t") ? "\t" : "  ");
+    const built = buildProperties(indent, indentUnit);
+    const hasSpread = properties.some((property) => property.kind() === "spread_element");
+    let insertAt: number;
     let insertedText: string;
-    if (multiline) {
-      const indent = lineIndent(this.source, properties[0].range().start.index);
-      // One indentation step: the first property's indent minus the object's own.
-      const objectIndent = lineIndent(this.source, objectNode.range().start.index);
-      const indentUnit = indent.slice(objectIndent.length) || (indent.includes("\t") ? "\t" : "  ");
-      insertedText = buildProperties(indent, indentUnit)
-        .map((property) => `\n${indent}${property},`)
+    if (hasSpread) {
+      insertAt = properties[properties.length - 1].range().end.index;
+      const hasComma = this.source[insertAt] === ",";
+      if (hasComma) insertAt += 1;
+      insertedText = built
+        .map((property) => (multiline ? `\n${indent}${property},` : ` ${property},`))
         .join("");
-    } else if (properties.length) {
-      insertedText = ` ${buildProperties("", "").join(", ")},`;
+      if (!hasComma) insertedText = `,${insertedText}`;
     } else {
-      insertedText = ` ${buildProperties("", "").join(", ")} `;
+      insertAt = objectNode.range().start.index + 1;
+      if (multiline) {
+        insertedText = built.map((property) => `\n${indent}${property},`).join("");
+      } else if (properties.length) {
+        insertedText = ` ${built.join(", ")},`;
+      } else {
+        insertedText = ` ${built.join(", ")} `;
+      }
     }
     this.edits.push({
       startPos: insertAt,
