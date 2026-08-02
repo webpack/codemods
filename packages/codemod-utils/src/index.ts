@@ -157,7 +157,9 @@ export class ConfigEditor {
     let insertedText: string;
     if (multiline) {
       const indent = lineIndent(this.source, properties[0].range().start.index);
-      const indentUnit = indent.includes("\t") ? "\t" : indent || "  ";
+      // One indentation step: the first property's indent minus the object's own.
+      const objectIndent = lineIndent(this.source, objectNode.range().start.index);
+      const indentUnit = indent.slice(objectIndent.length) || (indent.includes("\t") ? "\t" : "  ");
       insertedText = buildProperties(indent, indentUnit)
         .map((property) => `\n${indent}${property},`)
         .join("");
