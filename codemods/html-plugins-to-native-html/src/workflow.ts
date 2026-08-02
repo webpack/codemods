@@ -2,6 +2,7 @@ import type Js from "@codemod.com/jssg-types/langs/javascript";
 import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import {
   ConfigEditor,
+  type ModuleBinding,
   addImport,
   cascadeRemovalTarget,
   collectModuleBindings,
@@ -69,6 +70,14 @@ const HOOK_REVIEW_COMMENTS = new Map([
 const UNMAPPABLE_HOOKS = new Set(["beforeAssetTagGeneration", "afterTemplateExecution"]);
 // Handled by the per-entry migration itself rather than the option mapping.
 const MULTI_PAGE_SKIPPED_OPTIONS = new Set(["chunks", "filename"]);
+// Companion plugins that extended html-webpack-plugin; each maps to one
+// `output.html` option. Only migrated alongside a migrated html-webpack-plugin.
+const CSP_MODULE = "csp-html-webpack-plugin";
+const SRI_MODULE = "webpack-subresource-integrity";
+const FAVICONS_MODULE = "favicons-webpack-plugin";
+const SIBLING_PLUGIN_MODULES = [CSP_MODULE, SRI_MODULE, FAVICONS_MODULE];
+
+type PageMode = "single" | "template" | "multi";
 
 interface HtmlProp {
   name: string;
@@ -78,6 +87,15 @@ interface HtmlProp {
 function dedupeProps(props: HtmlProp[]): HtmlProp[] {
   const seen = new Set<string>();
   return props.filter((prop) => !seen.has(prop.name) && seen.add(prop.name));
+}
+
+function isRequireOf(node: SgNode<Js>, moduleName: string): boolean {
+  if (node.kind() !== "call_expression") return false;
+  const callee = node.field("function");
+  if (!callee || callee.kind() !== "identifier" || callee.text() !== "require") return false;
+  const argumentsNode = node.field("arguments");
+  const args = argumentsNode ? namedChildren(argumentsNode) : [];
+  return args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === moduleName;
 }
 
 // Everything one plugin instance contributes to its enclosing config.
@@ -150,10 +168,21 @@ class HtmlMigration {
   // Binding statements rewritten in place (e.g. into the `html` import).
   private readonly repurposedStatements = new Set<number>();
 
+  private readonly siblingBindings: ModuleBinding[] = [];
+  private readonly siblingNameToModule = new Map<string, string>();
+
   constructor(root: SgRoot<Js>, fileSystem: FsModule | null, pathModule: PathModule | null) {
     this.editor = new ConfigEditor(root.root());
     this.pluginBindings = collectModuleBindings(this.editor.rootNode, PLUGIN_MODULE);
     this.pluginNames = new Set(this.pluginBindings.map((binding) => binding.name));
+    for (const moduleName of SIBLING_PLUGIN_MODULES) {
+      const named = this.collectNamedBindings(moduleName);
+      for (const binding of [...collectModuleBindings(this.editor.rootNode, moduleName), ...named]) {
+        if (this.siblingNameToModule.has(binding.name)) continue;
+        this.siblingBindings.push(binding);
+        this.siblingNameToModule.set(binding.name, moduleName);
+      }
+    }
     this.configFileName = root.filename();
     this.fileSystem = fileSystem;
     this.pathModule = pathModule;
@@ -180,7 +209,7 @@ class HtmlMigration {
     this.planConfigInsertions();
     this.editor.finalizeRemovals();
     if (!this.editor.hasEdits) return null;
-    for (const binding of this.pluginBindings) {
+    for (const binding of [...this.pluginBindings, ...this.siblingBindings]) {
       if (this.repurposedStatements.has(binding.statement.range().start.index)) continue;
       this.editor.removeBindingIfUnused(binding);
     }
@@ -455,10 +484,13 @@ class HtmlMigration {
       return;
     }
     const findings = this.collectFindings(firstOptions);
-    this.removeInstances(pluginsPair, elements, [instances[0].element]);
+    const plan = this.planFor(configObject);
+    const mode: PageMode = findings.templateValue !== null ? "template" : "single";
     if (findings.templateValue !== null) this.migrateEntry(configObject, findings);
     else this.noteMultiPageEntry(configObject, findings);
     this.mergeIntoPlan(configObject, findings);
+    const siblingRemoved = this.processSiblings(elements, [instances[0].element], mode, plan);
+    this.removeInstances(pluginsPair, elements, [instances[0].element, ...siblingRemoved]);
     this.pluginMigrated = true;
   }
 
@@ -472,6 +504,163 @@ class HtmlMigration {
     } else {
       for (const element of removedElements) this.editor.markForRemoval(element);
     }
+  }
+
+  // ---------- companion plugins ----------
+
+  // Named bindings (`import { X }` / `const { X } = require(...)`) — e.g.
+  // webpack-subresource-integrity's named export, which the default-import
+  // resolution doesn't cover. Only single-name patterns, so removing the
+  // statement can never drop another binding.
+  private collectNamedBindings(moduleName: string): ModuleBinding[] {
+    const bindings: ModuleBinding[] = [];
+    for (const statement of this.editor.rootNode.findAll({ rule: { kind: "import_statement" } })) {
+      const source = statement.field("source");
+      if (!source || unquote(source.text()) !== moduleName) continue;
+      const specifiers = statement.findAll({ rule: { kind: "import_specifier" } });
+      if (specifiers.length !== 1) continue;
+      const local = specifiers[0].field("alias") ?? specifiers[0].field("name");
+      if (local) bindings.push({ name: local.text(), statement });
+    }
+    for (const kind of ["lexical_declaration", "variable_declaration"] as const) {
+      for (const statement of this.editor.rootNode.findAll({ rule: { kind } })) {
+        const declarators = namedChildren(statement).filter(
+          (child) => child.kind() === "variable_declarator",
+        );
+        if (declarators.length !== 1) continue;
+        const pattern = declarators[0].field("name");
+        const valueNode = declarators[0].field("value");
+        if (!pattern || pattern.kind() !== "object_pattern") continue;
+        if (!valueNode || !isRequireOf(valueNode, moduleName)) continue;
+        const properties = namedChildren(pattern);
+        if (properties.length !== 1) continue;
+        const property = properties[0];
+        if (property.kind() === "shorthand_property_identifier_pattern") {
+          bindings.push({ name: property.text(), statement });
+        } else if (property.kind() === "pair_pattern") {
+          const local = property.field("value");
+          if (local) bindings.push({ name: local.text(), statement });
+        }
+      }
+    }
+    return bindings;
+  }
+
+  private siblingInstantiationOf(
+    element: SgNode<Js>,
+  ): { instantiation: SgNode<Js>; module: string } | null {
+    const branches = guardBranchesOf(element);
+    if (branches) {
+      for (const branch of branches) {
+        const found = this.siblingInstantiationOf(branch);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (element.kind() !== "new_expression") return null;
+    const constructorNode = element.field("constructor");
+    const module = constructorNode
+      ? this.siblingNameToModule.get(constructorNode.text())
+      : undefined;
+    return constructorNode && module ? { instantiation: element, module } : null;
+  }
+
+  // Companion plugins piggybacked on html-webpack-plugin, so they only migrate
+  // (or make sense at all) next to a migrated instance. Returns the elements
+  // to remove alongside it.
+  private processSiblings(
+    elements: SgNode<Js>[],
+    hwpElements: SgNode<Js>[],
+    mode: PageMode,
+    plan: ConfigPlan,
+  ): SgNode<Js>[] {
+    const hwpStarts = new Set(hwpElements.map((element) => element.range().start.index));
+    const removed: SgNode<Js>[] = [];
+    for (const element of elements) {
+      if (hwpStarts.has(element.range().start.index)) continue;
+      const sibling = this.siblingInstantiationOf(element);
+      if (!sibling) continue;
+      if (this.migrateSibling(sibling.module, sibling.instantiation, mode, plan)) {
+        removed.push(element);
+      } else {
+        plan.commentLines.push(
+          `Left ${sibling.module} in place — review it, its options could not be mapped to output.html`,
+        );
+      }
+    }
+    return removed;
+  }
+
+  private migrateSibling(
+    module: string,
+    instantiation: SgNode<Js>,
+    mode: PageMode,
+    plan: ConfigPlan,
+  ): boolean {
+    const argumentsNode = instantiation.field("arguments");
+    const args = argumentsNode ? namedChildren(argumentsNode) : [];
+    const lost: string[] = [];
+    const props: HtmlProp[] = [];
+    if (module === CSP_MODULE) {
+      const policy = args[0];
+      if (!policy) props.push({ name: "csp", valueText: "true" });
+      else if (policy.kind() === "object") {
+        props.push({ name: "csp", valueText: `{ policy: ${policy.text()} }` });
+      } else return false;
+      const options = args[1];
+      if (options && options.kind() === "object") {
+        for (const optionPair of pairsOf(options)) lost.push(keyName(optionPair) ?? "options");
+      } else if (options) {
+        lost.push("options");
+      }
+    } else if (module === SRI_MODULE) {
+      let integrity = "true";
+      let enabled = true;
+      const options = args[0];
+      if (options && options.kind() !== "object") return false;
+      if (options) {
+        for (const optionPair of pairsOf(options)) {
+          const name = keyName(optionPair);
+          const value = optionPair.field("value");
+          if (name === "hashFuncNames" && value?.kind() === "array") integrity = value.text();
+          else if (name === "enabled" && value?.kind() === "false") enabled = false;
+          else if (name === "enabled") continue;
+          else lost.push(name ?? "options");
+        }
+      }
+      if (enabled) props.push({ name: "integrity", valueText: integrity });
+    } else {
+      // favicons-webpack-plugin — only the logo path maps (native `favicon`).
+      const argument = args[0];
+      if (argument && argument.kind() === "string") {
+        props.push({ name: "favicon", valueText: argument.text() });
+      } else if (argument && argument.kind() === "object") {
+        const logo = findPair(argument, "logo")?.field("value");
+        if (!logo || logo.kind() !== "string") return false;
+        props.push({ name: "favicon", valueText: logo.text() });
+        for (const optionPair of pairsOf(argument)) {
+          const name = keyName(optionPair);
+          if (name !== "logo") lost.push(name ?? "options");
+        }
+      } else return false;
+    }
+    for (const prop of props) {
+      if (mode === "multi") {
+        // A global `output.html` would generate a page for every entry.
+        lost.push(`${prop.name} (set output.html.${prop.name} by hand if every entry gets a page)`);
+      } else if (mode === "template" && prop.name === "favicon") {
+        // Favicons are only injected into webpack-generated pages.
+        lost.push("favicon (add it to the template)");
+      } else {
+        plan.htmlProps.push(prop);
+      }
+    }
+    if (lost.length) {
+      plan.commentLines.push(
+        `Removed ${module} options without a native HTML equivalent: ${[...new Set(lost)].join(", ")}`,
+      );
+    }
+    return true;
   }
 
   // One instance per page (`chunks: ["name"]`) maps to the entry descriptor
@@ -524,7 +713,17 @@ class HtmlMigration {
         : "true";
       pages.push({ entryDescriptor, htmlValue });
     }
-    this.removeInstances(pluginsPair, elements, instances.map((instance) => instance.element));
+    const plan = this.planFor(configObject);
+    const siblingRemoved = this.processSiblings(
+      elements,
+      instances.map((instance) => instance.element),
+      "multi",
+      plan,
+    );
+    this.removeInstances(pluginsPair, elements, [
+      ...instances.map((instance) => instance.element),
+      ...siblingRemoved,
+    ]);
     for (const page of pages) {
       const node = page.entryDescriptor;
       if (node.kind() === "object") {
@@ -535,7 +734,6 @@ class HtmlMigration {
         this.editor.replace(node, `{ import: ${node.text()}, html: ${page.htmlValue} }`);
       }
     }
-    const plan = this.planFor(configObject);
     plan.pluginMigratedHere = true;
     this.requireExperimentsHtml(plan);
     plan.htmlFilename ??= '"[name].html"';
