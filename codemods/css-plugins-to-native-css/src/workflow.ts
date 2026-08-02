@@ -199,7 +199,14 @@ class CssMigration {
     for (const work of rulesWork.values()) {
       const allElements = namedChildren(work.arrayNode);
       if (work.removedElements.length === allElements.length && !work.swaps.length) {
-        this.editor.markForRemoval(cascadeRemovalTarget(work.arrayNode));
+        const target = cascadeRemovalTarget(work.arrayNode);
+        // A standalone array (assignment/declarator value) empties in place —
+        // grouped removal would strip the `= [...]` and leave a bare reference.
+        if (target === work.arrayNode) {
+          this.editor.replace(work.arrayNode, "[]");
+        } else {
+          this.editor.markForRemoval(target);
+        }
         continue;
       }
       for (const element of work.removedElements) {
@@ -267,13 +274,15 @@ class CssMigration {
       if (name === "rules" || name === "oneOf") return true;
     }
     // Assignments into another tool's mutable config parameter
-    // (`config.module.rules = [...]` in next.config, Storybook, …) are not ours.
-    if (
-      owner &&
-      owner.kind() === "assignment_expression" &&
-      owner.field("left")?.text() !== "module.exports"
-    ) {
-      return false;
+    // (`config.module.rules = [...]` in next.config, Storybook, …) are not
+    // ours; assignments to the file's own exports are.
+    if (owner && owner.kind() === "assignment_expression") {
+      const left = owner.field("left")?.text() ?? "";
+      const isOwnExport =
+        left === "module.exports" ||
+        left.startsWith("module.exports.") ||
+        left.startsWith("exports.");
+      if (!isOwnExport) return false;
     }
     if (this.pluginNames.size > 0) return true;
     return findConfigObjectFor(usePair) !== null;
