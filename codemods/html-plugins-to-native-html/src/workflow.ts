@@ -44,6 +44,9 @@ const LOST_OPTION_HINTS = new Map([
   ],
 ]);
 
+type FsModule = typeof import("node:fs");
+type PathModule = typeof import("node:path");
+
 interface HtmlProp {
   name: string;
   valueText: string;
@@ -75,16 +78,45 @@ interface ConfigPlan {
   pendingEntry: { text: string; comment: string } | null;
 }
 
+// Insert the script tag before `</head>` (or `</body>`), matching the
+// closing tag's indentation; append when the template has neither.
+function insertScriptTag(html: string, tag: string): string {
+  for (const marker of [/<\/head>/i, /<\/body>/i]) {
+    const match = marker.exec(html);
+    if (!match) continue;
+    const lineStart = html.lastIndexOf("\n", match.index) + 1;
+    const closingIndent = html.slice(lineStart, match.index);
+    if (!/^[ \t]*$/.test(closingIndent)) {
+      // Closing tag mid-line — insert inline right before it.
+      return `${html.slice(0, match.index)}${tag}${html.slice(match.index)}`;
+    }
+    // Indent like the previous sibling line when it sits deeper.
+    const before = html.slice(0, lineStart);
+    const prevLineStart = before.lastIndexOf("\n", before.length - 2) + 1;
+    const prevIndentMatch = /^[ \t]*/.exec(before.slice(prevLineStart));
+    const prevIndent = prevIndentMatch ? prevIndentMatch[0] : "";
+    const indent = prevIndent.length > closingIndent.length ? prevIndent : `${closingIndent}  `;
+    return `${before}${indent}${tag}\n${html.slice(lineStart)}`;
+  }
+  return `${html.replace(/\s*$/, "")}\n${tag}\n`;
+}
+
 class HtmlMigration {
   private readonly editor: ConfigEditor;
   private readonly pluginBindings;
   private readonly pluginNames: Set<string>;
   private readonly configPlans = new Map<number, ConfigPlan>();
+  private readonly configFileName: string;
+  private readonly fileSystem: FsModule | null;
+  private readonly pathModule: PathModule | null;
 
-  constructor(root: SgRoot<Js>) {
+  constructor(root: SgRoot<Js>, fileSystem: FsModule | null, pathModule: PathModule | null) {
     this.editor = new ConfigEditor(root.root());
     this.pluginBindings = collectModuleBindings(this.editor.rootNode, PLUGIN_MODULE);
     this.pluginNames = new Set(this.pluginBindings.map((binding) => binding.name));
+    this.configFileName = root.filename();
+    this.fileSystem = fileSystem;
+    this.pathModule = pathModule;
   }
 
   run(): string | null {
@@ -473,13 +505,18 @@ class HtmlMigration {
   }
 
   // The template becomes the entry (native HTML entry point); the previous
-  // entry must be referenced from the template with a `<script>` tag.
+  // entry must be referenced from the template with a `<script>` tag — added
+  // to the template file directly when it can be found on disk.
   private migrateEntry(configObject: SgNode<Js>, findings: InstanceFindings): void {
+    const templateValue = findings.templateValue as string;
     const entryPair = findPair(configObject, "entry");
     if (!entryPair) {
+      const injected = this.injectScriptIntoTemplate(templateValue, "./src/index.js");
       findings.pendingEntry = {
-        text: findings.templateValue as string,
-        comment: `The template is now the entry: reference the previous entry (webpack's default is ./src/index.js) from it, e.g. <script defer src="./src/index.js"></script>`,
+        text: templateValue,
+        comment: injected
+          ? `The template is now the entry and loads the previous default entry via <script defer src="${injected}"></script>`
+          : `The template is now the entry: reference the previous entry (webpack's default is ./src/index.js) from it, e.g. <script defer src="./src/index.js"></script>`,
       };
       return;
     }
@@ -489,7 +526,10 @@ class HtmlMigration {
       findings.lost.push("template (make the template an .html entry that loads your JS)");
       return;
     }
-    const comment = `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
+    const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
+    const comment = injected
+      ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
+      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
       const indent = lineIndent(this.editor.source, entryPair.range().start.index);
@@ -501,6 +541,40 @@ class HtmlMigration {
       this.editor.replace(replaceable, findings.templateValue as string);
     } else {
       this.editor.replace(replaceable, `/* ${comment} */ ${findings.templateValue}`);
+    }
+  }
+
+  // Add a `<script defer>` tag loading the previous entry to the template file
+  // itself. Returns the tag's `src` (relative to the template) on success, or
+  // when the template already loads it; `null` falls back to a review comment
+  // (no filesystem access, non-relative paths, or files not found on disk).
+  private injectScriptIntoTemplate(templateQuoted: string, entryRel: string): string | null {
+    const fs = this.fileSystem;
+    const path = this.pathModule;
+    if (!fs || !path || !this.configFileName) return null;
+    const templateRel = unquote(templateQuoted);
+    if (!templateRel.startsWith(".") || !entryRel.startsWith(".")) return null;
+    try {
+      const configDir = path.dirname(this.configFileName);
+      const templateFile = path.resolve(configDir, templateRel);
+      const entryFile = path.resolve(configDir, entryRel);
+      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
+      const relative = path.relative(path.dirname(templateFile), entryFile).replace(/\\/g, "/");
+      const scriptSrc = relative.startsWith(".") ? relative : `./${relative}`;
+      const html = fs.readFileSync(templateFile, "utf8");
+      // Already loaded (e.g. a re-run) — nothing to write.
+      const sourcePattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi;
+      for (let match = sourcePattern.exec(html); match; match = sourcePattern.exec(html)) {
+        const existing = match[1].startsWith(".") ? match[1] : `./${match[1]}`;
+        if (existing === scriptSrc) return scriptSrc;
+      }
+      fs.writeFileSync(
+        templateFile,
+        insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
+      );
+      return scriptSrc;
+    } catch {
+      return null;
     }
   }
 
@@ -610,7 +684,15 @@ class HtmlMigration {
 }
 
 async function transform(root: SgRoot<Js>): Promise<string | null> {
-  return new HtmlMigration(root).run();
+  let fileSystem: FsModule | null = null;
+  let pathModule: PathModule | null = null;
+  try {
+    fileSystem = await import("node:fs");
+    pathModule = await import("node:path");
+  } catch {
+    // No filesystem access — template edits fall back to review comments.
+  }
+  return new HtmlMigration(root, fileSystem, pathModule).run();
 }
 
 export default transform;

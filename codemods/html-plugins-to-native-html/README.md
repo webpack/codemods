@@ -22,7 +22,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 
 ### `template`
 
-`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The codemod turns the template into the entry and leaves a review comment — you must reference the previous JS entry from the template yourself, e.g. `<script defer src="./src/index.js"></script>`, because the HTML file now drives the build. Since head tags are only injected into webpack-generated pages, `title`/`meta`/`favicon`/`base` are flagged to be added to the template instead.
+`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The codemod turns the template into the entry, and — because the HTML file now drives the build — it must load the previous JS entry itself. When the template and entry files are found on disk (both paths relative), the codemod edits the template and adds `<script defer src="…"></script>` (relative to the template) before `</head>`, skipping templates that already load it; otherwise it leaves a review comment telling you to add the tag yourself. Since head tags are only injected into webpack-generated pages, `title`/`meta`/`favicon`/`base` are flagged to be added to the template instead.
 
 ### What is left untouched
 
@@ -70,14 +70,14 @@ module.exports = {
 };
 ```
 
-With a `template`, the template becomes the entry point:
+With a `template`, the template becomes the entry point and gets a `<script>` tag for the previous entry added to it:
 
 ```js
 module.exports = {
   experiments: {
     html: true,
   },
-  // The template is now the entry: reference the previous entry from it, e.g. <script defer src="./src/index.js"></script>
+  // The template is now the entry and loads the previous entry via <script defer src="./index.js"></script>
   entry: "./src/index.html",
   output: {
     htmlFilename: "index.html",
