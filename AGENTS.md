@@ -117,7 +117,7 @@ Add `semantic_analysis: file` under `js-ast-grep` when the transform needs scope
     "directory": "codemods/<codemod-name>",
     "bugs": "https://github.com/webpack/codemods/issues"
   },
-  "author": "<github-handle> (<Name>)",
+  "author": "<Name> <<email>>",
   "license": "MIT",
   "homepage": "https://github.com/webpack/codemods/blob/main/codemods/<codemod-name>/README.md",
   "devDependencies": {

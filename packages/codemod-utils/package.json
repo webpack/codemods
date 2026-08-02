@@ -19,7 +19,7 @@
     "directory": "packages/codemod-utils",
     "bugs": "https://github.com/webpack/codemods/issues"
   },
-  "author": "bjohansebas (Sebastian Beltran)",
+  "author": "Sebastian Beltran <bjohansebas@gmail.com>",
   "license": "MIT",
   "devDependencies": {
     "@codemod.com/jssg-types": "^1.6.2"

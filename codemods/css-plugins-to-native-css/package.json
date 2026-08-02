@@ -13,7 +13,7 @@
     "directory": "codemods/css-plugins-to-native-css",
     "bugs": "https://github.com/webpack/codemods/issues"
   },
-  "author": "bjohansebas (Sebastian Beltran)",
+  "author": "Sebastian Beltran <bjohansebas@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/webpack/codemods/blob/main/codemods/css-plugins-to-native-css/README.md",
   "dependencies": {
