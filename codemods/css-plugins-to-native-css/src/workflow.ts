@@ -191,7 +191,7 @@ class CssMigration {
     for (const work of rulesWork.values()) {
       const allElements = namedChildren(work.arrayNode);
       if (work.removedElements.length === allElements.length && !work.swaps.length) {
-        this.editor.markForRemoval(this.escalateEmptyRulesArray(work.arrayNode));
+        this.editor.markForRemoval(this.cascadeRemovalTarget(work.arrayNode));
         continue;
       }
       for (const element of work.removedElements) {
@@ -249,23 +249,29 @@ class CssMigration {
     return rulesWork;
   }
 
-  // The whole rules array goes away — cascade to `rules`/`module` when empty.
-  private escalateEmptyRulesArray(arrayNode: SgNode<Js>): SgNode<Js> {
-    const rulesPair = arrayNode.parent();
-    if (!rulesPair || rulesPair.kind() !== "pair") return arrayNode;
-    const moduleObject = rulesPair.parent();
-    const modulePair = moduleObject ? moduleObject.parent() : null;
-    if (
-      moduleObject &&
-      moduleObject.kind() === "object" &&
-      pairsOf(moduleObject).length === 1 &&
-      modulePair &&
-      modulePair.kind() === "pair" &&
-      keyName(modulePair) === "module"
-    ) {
-      return modulePair;
+  // Climb while removing `target` would leave an empty container behind, so a
+  // css-only `oneOf` → rule → `rules` → `module` chain collapses as one
+  // removal. Stops where a container keeps other members (the grouped-removal
+  // machinery then deletes the target cleanly) or where the container is not a
+  // property value/list element (clearContainer then empties it in place).
+  private cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
+    let target = node;
+    for (;;) {
+      const parent = target.parent();
+      if (!parent) return target;
+      if (parent.kind() === "pair") {
+        target = parent;
+        continue;
+      }
+      if (parent.kind() !== "object" && parent.kind() !== "array") return target;
+      const members = parent.kind() === "object" ? pairsOf(parent) : namedChildren(parent);
+      if (members.length !== 1) return target;
+      const grandparent = parent.parent();
+      if (!grandparent || (grandparent.kind() !== "pair" && grandparent.kind() !== "array")) {
+        return target;
+      }
+      target = parent;
     }
-    return rulesPair;
   }
 
   private replaceUsePair(swap: UseSwap): void {
