@@ -19,15 +19,15 @@ export * from "./imports";
 // ---------- webpack config helpers ----------
 
 // Loader name behind a `use` entry: a plain string, `require.resolve("...")`,
-// or `{ loader: <one of those> }`.
+// `import.meta.resolve("...")`, or `{ loader: <one of those> }`.
 export function loaderNameOf(node: SgNode<Js>): string | null {
   if (node.kind() === "string") return unquote(node.text());
   if (node.kind() === "call_expression") {
     const callee = node.field("function");
+    const receiver = callee?.kind() === "member_expression" ? callee.field("object")?.text() : null;
     if (
       !callee ||
-      callee.kind() !== "member_expression" ||
-      callee.field("object")?.text() !== "require" ||
+      (receiver !== "require" && receiver !== "import.meta") ||
       callee.field("property")?.text() !== "resolve"
     ) {
       return null;
