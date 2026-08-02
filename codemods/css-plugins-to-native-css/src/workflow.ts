@@ -46,7 +46,8 @@ const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
 interface ConfigPlan {
   config: SgNode<Js>;
   needsExperimentsCss: boolean;
-  disableCssSourceMap: boolean;
+  cssLoaderRules: number;
+  sourceMapOffRules: number;
   outputProps: { name: string; valueText: string }[];
 }
 
@@ -73,12 +74,14 @@ interface UseSwap {
   generatorProps: RuleProp[];
   parserProps: RuleProp[];
   cssPublicPath: string | null;
+  trivial: boolean;
+  sourceMapOff: boolean;
+  plan: ConfigPlan | null;
 }
 
 interface RulesArrayWork {
   arrayNode: SgNode<Js>;
-  removedElements: SgNode<Js>[];
-  swaps: UseSwap[];
+  entries: UseSwap[];
 }
 
 interface PluginRemoval {
@@ -352,12 +355,31 @@ class CssMigration {
   // ---------- module.rules ----------
 
   // Trivial rules are dropped (the `experiments.css: "auto"` default takes
-  // over); surviving rules get `type: "css/auto"`.
+  // over); surviving rules get `type: "css/auto"`. Survival is decided after
+  // every rule was collected, so config-wide facts (mixed sourceMap settings)
+  // can pull a rule back in to carry its comment.
   private transformRules(usePairs: SgNode<Js>[]): void {
     const rulesWork = this.collectRulesWork(usePairs);
     for (const work of rulesWork.values()) {
+      const removed: SgNode<Js>[] = [];
+      const swaps: UseSwap[] = [];
+      for (const entry of work.entries) {
+        // Mixed per-rule sourceMap settings can't scope `devtool` — flag them.
+        if (entry.sourceMapOff && entry.plan && this.hasMixedSourceMaps(entry.plan)) {
+          entry.lostOptions = [...new Set([...entry.lostOptions, "css-loader.sourceMap"])];
+        }
+        const survives =
+          !entry.trivial ||
+          entry.keptLoaders.length > 0 ||
+          entry.lostOptions.length > 0 ||
+          entry.generatorProps.length > 0 ||
+          entry.parserProps.length > 0 ||
+          entry.cssPublicPath !== null;
+        if (survives) swaps.push(entry);
+        else removed.push(entry.ruleObject);
+      }
       const allElements = namedChildren(work.arrayNode);
-      if (work.removedElements.length === allElements.length && !work.swaps.length) {
+      if (removed.length === allElements.length && !swaps.length) {
         const target = cascadeRemovalTarget(work.arrayNode);
         // A standalone array (assignment/declarator value) empties in place —
         // grouped removal would strip the `= [...]` and leave a bare reference.
@@ -368,13 +390,17 @@ class CssMigration {
         }
         continue;
       }
-      for (const element of work.removedElements) {
+      for (const element of removed) {
         this.editor.markForRemoval(element);
       }
-      for (const swap of work.swaps) {
+      for (const swap of swaps) {
         this.replaceUsePair(swap);
       }
     }
+  }
+
+  private hasMixedSourceMaps(plan: ConfigPlan): boolean {
+    return plan.sourceMapOffRules > 0 && plan.sourceMapOffRules < plan.cssLoaderRules;
   }
 
   private collectRulesWork(usePairs: SgNode<Js>[]): Map<number, RulesArrayWork> {
@@ -405,49 +431,48 @@ class CssMigration {
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
       }
-      if (findings.cssSourceMapOff) {
-        const config = findConfigObjectFor(pair);
-        if (config) this.planFor(config).disableCssSourceMap = true;
-        else findings.lost.push("css-loader.sourceMap");
+      const config = findConfigObjectFor(pair);
+      const plan = config ? this.planFor(config) : null;
+      if (plan && this.ruleUsesCssLoader(elements)) {
+        plan.cssLoaderRules += 1;
+        if (findings.cssSourceMapOff) plan.sourceMapOffRules += 1;
+      } else if (findings.cssSourceMapOff) {
+        findings.lost.push("css-loader.sourceMap");
       }
-      const lostOptions = [...new Set(findings.lost)];
-      const generatorProps = dedupeProps(findings.generatorProps);
-      const parserProps = dedupeProps(findings.parserProps);
       const key = arrayNode.range().start.index;
       let work = rulesWork.get(key);
       if (!work) {
-        work = { arrayNode, removedElements: [], swaps: [] };
+        work = { arrayNode, entries: [] };
         rulesWork.set(key, work);
       }
-      const trivialRule = pairsOf(ruleObject).every((rulePair) => {
+      const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
         return name === "test" || name === "use";
       });
-      // A rule with lost or translated options stays as a swap so the comment
-      // and the generator/parser properties have a home.
-      const survives =
-        !trivialRule ||
-        kept.length > 0 ||
-        lostOptions.length > 0 ||
-        generatorProps.length > 0 ||
-        parserProps.length > 0 ||
-        findings.cssPublicPath !== null;
-      if (!survives) {
-        work.removedElements.push(ruleObject);
-      } else {
-        work.swaps.push({
-          pair,
-          ruleObject,
-          keptLoaders: kept,
-          filterSuffix: filterSuffixOf(originalValue, value),
-          lostOptions,
-          generatorProps,
-          parserProps,
-          cssPublicPath: findings.cssPublicPath,
-        });
-      }
+      work.entries.push({
+        pair,
+        ruleObject,
+        keptLoaders: kept,
+        filterSuffix: filterSuffixOf(originalValue, value),
+        lostOptions: [...new Set(findings.lost)],
+        generatorProps: dedupeProps(findings.generatorProps),
+        parserProps: dedupeProps(findings.parserProps),
+        cssPublicPath: findings.cssPublicPath,
+        trivial,
+        sourceMapOff: findings.cssSourceMapOff,
+        plan,
+      });
     }
     return rulesWork;
+  }
+
+  private ruleUsesCssLoader(elements: SgNode<Js>[]): boolean {
+    const usesIt = (node: SgNode<Js>): boolean => {
+      const branches = guardBranchesOf(node);
+      if (branches) return branches.some(usesIt);
+      return loaderNameOf(node) === "css-loader";
+    };
+    return elements.some(usesIt);
   }
 
   // Webpack owns the rule when its array hangs on a `rules`/`oneOf` pair, the
@@ -633,7 +658,13 @@ class CssMigration {
     const key = config.range().start.index;
     let plan = this.configPlans.get(key);
     if (!plan) {
-      plan = { config, needsExperimentsCss: false, disableCssSourceMap: false, outputProps: [] };
+      plan = {
+        config,
+        needsExperimentsCss: false,
+        cssLoaderRules: 0,
+        sourceMapOffRules: 0,
+        outputProps: [],
+      };
       this.configPlans.set(key, plan);
     }
     return plan;
@@ -664,7 +695,8 @@ class CssMigration {
   // intent. Any non-array devtool expression wraps as the `use` value;
   // `false` means no maps at all and an existing array is already explicit.
   private planCssDevtool(plan: ConfigPlan): void {
-    if (!plan.disableCssSourceMap) return;
+    // Only when every css-loader rule in this config disabled its maps.
+    if (!plan.sourceMapOffRules || this.hasMixedSourceMaps(plan)) return;
     const value = findPair(plan.config, "devtool")?.field("value");
     if (!value || value.kind() === "false" || value.kind() === "array") return;
     this.editor.replace(
