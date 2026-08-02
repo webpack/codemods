@@ -5,7 +5,13 @@ import { ConfigEditor, findPair, keyName, namedChildren, pairsOf } from "@webpac
 
 // Packages replaced by native HTML; review your lockfile if other tooling
 // (Storybook, tests, …) still relies on them.
-const REMOVED_PACKAGES = new Set(["html-webpack-plugin", "html-loader"]);
+const REMOVED_PACKAGES = new Set([
+  "html-webpack-plugin",
+  "html-loader",
+  "csp-html-webpack-plugin",
+  "webpack-subresource-integrity",
+  "favicons-webpack-plugin",
+]);
 const DEPENDENCY_KEYS = ["dependencies", "devDependencies"];
 
 async function transform(root: SgRoot<Json>): Promise<string | null> {
