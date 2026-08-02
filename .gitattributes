@@ -2,4 +2,4 @@
 * text=auto eol=lf
 
 # CRLF fixtures exercise the editor's EOL detection — keep their bytes as-is.
-codemods/*/tests/**/crlf.config.js -text
+codemods/*/tests/crlf/* -text

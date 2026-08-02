@@ -33,8 +33,7 @@ codemods/<codemod-name>/
 ├── src/
 │   └── workflow.ts    # The transform, written with jssg (ast-grep)
 └── tests/
-    ├── input/         # Fixtures before the transform
-    └── expected/      # The same filenames after the transform
+    └── <case-name>/   # One directory per case: input.js + expected.js
 ```
 
 ### File templates
@@ -111,7 +110,7 @@ Add `semantic_analysis: file` under `js-ast-grep` when the transform needs scope
   "description": "<Same description as codemod.yaml>.",
   "type": "module",
   "scripts": {
-    "test": "npx codemod jssg test -l typescript ./src/workflow.ts ./"
+    "test": "npx codemod jssg test -l typescript ./src/workflow.ts"
   },
   "repository": {
     "type": "git",
@@ -166,7 +165,7 @@ References: [jssg docs](https://docs.codemod.com/jssg) and [ast-grep rule refere
 
 ### Tests
 
-Every file in `tests/input/` must have a file with the same name in `tests/expected/` containing the post-transform output. Cover at least: a file that is transformed, a file that must remain untouched, and both CJS/ESM variants when relevant.
+Each case is a directory under `tests/` holding an `input.<ext>` file and an `expected.<ext>` file with the post-transform output (`.js`, `.mjs`, … — the extension decides how the input parses). Cover at least: a file that is transformed, a file that must remain untouched, and both CJS/ESM variants when relevant.
 
 ### Checklist before opening a PR
 
