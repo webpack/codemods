@@ -597,16 +597,14 @@ class CssMigration {
     }
   }
 
-  // css-loader's `sourceMap: false` maps to a per-type `devtool` entry. With
-  // no devtool (or a non-string form) there is nothing to disable safely.
+  // css-loader's `sourceMap: false` scopes a string `devtool` to javascript
+  // only — devtool array entries are additive, so omitting css disables its
+  // maps. With no devtool (or a non-string form) there is nothing to disable.
   private planCssDevtool(plan: ConfigPlan): void {
     if (!plan.disableCssSourceMap) return;
     const value = findPair(plan.config, "devtool")?.field("value");
     if (!value || value.kind() !== "string") return;
-    this.editor.replace(
-      value,
-      `[{ type: "javascript", use: ${value.text()} }, { type: "css", use: false }]`,
-    );
+    this.editor.replace(value, `[{ type: "javascript", use: ${value.text()} }]`);
   }
 
   // Insert props into the config's `key` object, creating it when absent; an
