@@ -1,6 +1,6 @@
 # @webpack/html-plugins-to-native-html
 
-Migrates webpack configurations from `html-webpack-plugin` to webpack's native HTML support (`experiments.html` + `output.html`).
+Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to webpack's native HTML support (`experiments.html` + `output.html`).
 
 > Requires **webpack >= 5.109.0**: the transform relies on the `output.html` options (`title`, `meta`, `favicon`, `base`, `inject`, …) introduced there.
 
@@ -12,6 +12,13 @@ Migrates webpack configurations from `html-webpack-plugin` to webpack's native H
 - Maps plugin options to their `output.html` counterparts: `title`, `meta` (string values), `favicon`, `base`, `inject` (`"body"`/`"head"`/`false`; `true` is the native default), and `scriptLoading: "blocking"` (`"defer"` is the native default).
 - Drops options the native pipeline covers on its own (`minify: true`/`"auto"`, `cache`, `showErrors`, `chunksSortMode`, `chunks: "all"`, `publicPath: "auto"`) silently.
 - Options without a native equivalent (`hash`, a `minify` object, `chunks` arrays, `templateContent`, `templateParameters`, …) are dropped with a `// Removed html-webpack-plugin options without a native HTML equivalent: …` comment so you can review the behavior change; a manual migration path is appended where one exists.
+
+### `html-loader`
+
+- Removes rules that only wire up `html-loader` (cascading to empty `rules`/`module` entries): with no user rule matching `.html`, webpack's `experiments.html: "auto"` default enables native HTML by itself, and importing an `.html` file from JS natively yields the processed HTML string — the same shape `html-loader` exported.
+- Rules with extra conditions or surviving options are kept with `type: "html"` instead — and since their presence disables the `"auto"` default, `experiments.html: true` is added to that configuration.
+- Any other loader in the chain (template compilers, custom ones) keeps working in front of native HTML: it stays in `use` while `html-loader` is dropped.
+- Loader options: boolean `sources` becomes the rule's `parser: { sources }`; `esModule` and `minimize` are dropped silently (native HTML covers them); a `sources` object or `preprocessor` function is flagged with a review comment (`preprocessor` maps manually to the rule's `parser.template`, which is synchronous and receives `(source, { module, resource })`).
 
 ### `template`
 
@@ -78,4 +85,4 @@ module.exports = {
 };
 ```
 
-The codemod also removes `html-webpack-plugin` from your `package.json` (`dependencies` and `devDependencies`). If other tooling in the repo still uses it (Storybook, test setups, …), reinstall it.
+The codemod also removes `html-webpack-plugin` and `html-loader` from your `package.json` (`dependencies` and `devDependencies`). If other tooling in the repo still uses them (Storybook, test setups, …), reinstall the ones you need.
