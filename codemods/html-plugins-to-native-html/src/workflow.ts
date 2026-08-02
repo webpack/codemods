@@ -204,6 +204,7 @@ class HtmlMigration {
   private readonly configPlans = new Map<number, ConfigPlan>();
   private readonly configFileName: string;
   private readonly fileSystem: FsModule | null;
+  private injectDebug = "";
   private pluginMigrated = false;
   private pluginRetained = false;
   // Binding statements rewritten in place (e.g. into the `html` import).
@@ -1082,7 +1083,7 @@ class HtmlMigration {
     const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
     const comment = injected
       ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
-      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
+      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script> [${this.injectDebug}]`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
       const indent = lineIndent(this.editor.source, entryPair.range().start.index);
@@ -1117,6 +1118,14 @@ class HtmlMigration {
       if (!templateSegments || !entrySegments) return null;
       const templateFile = templateSegments.join(separator);
       const entryFile = entrySegments.join(separator);
+      const probe = (candidate: string): string => {
+        try {
+          return String(fs.existsSync(candidate));
+        } catch (error) {
+          return `ERR:${(error as Error).message}`;
+        }
+      };
+      this.injectDebug = `raw=${this.configFileName} tpl=${templateFile} e1=${probe(templateFile)} e2=${probe(templateFile.replace(/\\/g, "/"))} e3=${probe(`\\\\?\\${templateFile}`)} cwd=${(globalThis as { process?: { cwd?: () => string } }).process?.cwd?.()}`;
       if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
       const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
       const html = fs.readFileSync(templateFile, "utf8");
