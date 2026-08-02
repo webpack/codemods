@@ -18,17 +18,15 @@ import {
 
 const PLUGIN_MODULE = "mini-css-extract-plugin";
 const REMOVABLE_LOADERS = new Set(["style-loader", "css-loader"]);
-// Only `filename`/`chunkFilename` have native counterparts; the rest of the
-// plugin options (ignoreOrder, insert, attributes, linkType, runtime) don't.
+// Plugin options with a native counterpart; the rest have none and are dropped.
 const PLUGIN_OPTION_TO_OUTPUT = new Map([
   ["filename", "cssFilename"],
   ["chunkFilename", "cssChunkFilename"],
 ]);
 const CSS_SAMPLE_FILES = ["/file.css", "/file.module.css"];
-// css-loader options that describe the loader chain or things native CSS
-// handles on its own; every other option (url, import, exportType, …) changes
-// parsing/export semantics that native CSS cannot replicate.
+// Options native CSS covers on its own; any other option is flagged when dropped.
 const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "sourceMap", "esModule"]);
+const DROPPABLE_INJECTION_LOADER_OPTIONS = new Set(["esModule"]);
 
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
@@ -100,9 +98,7 @@ class CssMigration {
     );
   }
 
-  // A `use` entry replaceable by native CSS: a known loader string, the
-  // plugin's `.loader`, `{ loader: <one of those>, ... }`, or the dev/prod
-  // `cond ? a : b` / `cond && a` forms where every branch is replaceable.
+  // A `use` entry replaceable by native CSS, unwrapping dev/prod guards.
   private isRemovableUseElement(node: SgNode<Js>): boolean {
     if (this.isPluginLoaderExpression(node)) return true;
     if (node.kind() === "binary_expression" && node.field("operator")?.text() === "&&") {
@@ -127,43 +123,50 @@ class CssMigration {
     return name !== null && REMOVABLE_LOADERS.has(name);
   }
 
-  // css-loader options native CSS cannot replicate: any key outside the
-  // droppable set (url, import, exportType, …), and `modules` when the rule
-  // also matches plain `.css` files — that option applies to every matched
-  // file, while `css/auto` only treats `*.module.*` names as CSS modules.
-  // These are still migrated, but flagged with a comment in the config.
-  private lostCssLoaderOptions(node: SgNode<Js>, ruleObject: SgNode<Js>): string[] {
+  // Dropped options native CSS cannot replicate, qualified per loader;
+  // `modules` counts only when the rule also matches plain `.css` files.
+  private lostLoaderOptions(node: SgNode<Js>, ruleObject: SgNode<Js>): string[] {
     if (node.kind() === "binary_expression") {
       const right = node.field("right");
-      return right ? this.lostCssLoaderOptions(right, ruleObject) : [];
+      return right ? this.lostLoaderOptions(right, ruleObject) : [];
     }
     if (node.kind() === "ternary_expression") {
       const consequence = node.field("consequence");
       const alternative = node.field("alternative");
       return [
-        ...(consequence ? this.lostCssLoaderOptions(consequence, ruleObject) : []),
-        ...(alternative ? this.lostCssLoaderOptions(alternative, ruleObject) : []),
+        ...(consequence ? this.lostLoaderOptions(consequence, ruleObject) : []),
+        ...(alternative ? this.lostLoaderOptions(alternative, ruleObject) : []),
       ];
     }
-    if (node.kind() !== "object" || loaderNameOf(node) !== "css-loader") return [];
+    if (node.kind() !== "object") return [];
+    const loaderValue = findPair(node, "loader")?.field("value");
+    const isExtractLoader = Boolean(loaderValue && this.isPluginLoaderExpression(loaderValue));
+    const loaderName = isExtractLoader ? "MiniCssExtractPlugin.loader" : loaderNameOf(node);
+    if (!loaderName) return [];
+    if (!isExtractLoader && loaderName !== "css-loader" && loaderName !== "style-loader") {
+      return [];
+    }
+    const droppable =
+      loaderName === "css-loader"
+        ? DROPPABLE_CSS_LOADER_OPTIONS
+        : DROPPABLE_INJECTION_LOADER_OPTIONS;
     const optionsPair = findPair(node, "options");
     if (!optionsPair) return [];
     const optionsValue = optionsPair.field("value");
-    if (!optionsValue || optionsValue.kind() !== "object") return ["options"];
+    if (!optionsValue || optionsValue.kind() !== "object") return [`${loaderName}.options`];
     const lost: string[] = [];
     for (const optionPair of pairsOf(optionsValue)) {
       const name = keyName(optionPair);
-      if (name === "modules") {
-        if (ruleMatchesFiles(ruleObject, ["/file.css"])) lost.push(name);
-      } else if (name === null || !DROPPABLE_CSS_LOADER_OPTIONS.has(name)) {
-        lost.push(name ?? "options");
+      if (loaderName === "css-loader" && name === "modules") {
+        if (ruleMatchesFiles(ruleObject, ["/file.css"])) lost.push(`${loaderName}.${name}`);
+      } else if (name === null || !droppable.has(name)) {
+        lost.push(`${loaderName}.${name ?? "options"}`);
       }
     }
     return lost;
   }
 
-  // The `new MiniCssExtractPlugin(...)` behind a plugins element, unwrapping
-  // the `isProd && new Plugin()` / `isDev ? false : new Plugin()` guards.
+  // The plugin instantiation behind a plugins element, unwrapping guards.
   private pluginInstantiationOf(element: SgNode<Js>): SgNode<Js> | null {
     const candidates: (SgNode<Js> | null)[] = [element];
     if (element.kind() === "binary_expression" && element.field("operator")?.text() === "&&") {
@@ -182,10 +185,8 @@ class CssMigration {
 
   // ---------- module.rules ----------
 
-  // Rules holding only `test` + `use` are dropped outright: with no user rule
-  // matching `.css`, `experiments.css: "auto"` enables native CSS by itself.
-  // Rules that must stay get `type: "css/auto"` (plus `experiments.css: true`
-  // when they match `.css`, since their presence disables the "auto" default).
+  // Trivial rules are dropped (the `experiments.css: "auto"` default takes
+  // over); surviving rules get `type: "css/auto"`.
   private transformRules(): void {
     const rulesWork = this.collectRulesWork();
     for (const work of rulesWork.values()) {
@@ -219,7 +220,7 @@ class CssMigration {
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       const lostOptions = [
-        ...new Set(elements.flatMap((element) => this.lostCssLoaderOptions(element, ruleObject))),
+        ...new Set(elements.flatMap((element) => this.lostLoaderOptions(element, ruleObject))),
       ];
       const arrayNode = ruleObject.parent();
       if (!arrayNode) continue;
@@ -249,11 +250,8 @@ class CssMigration {
     return rulesWork;
   }
 
-  // Climb while removing `target` would leave an empty container behind, so a
-  // css-only `oneOf` → rule → `rules` → `module` chain collapses as one
-  // removal. Stops where a container keeps other members (the grouped-removal
-  // machinery then deletes the target cleanly) or where the container is not a
-  // property value/list element (clearContainer then empties it in place).
+  // Climb while the removal would leave an empty container behind, so a
+  // css-only `oneOf` → rule → `rules` → `module` chain collapses as one removal.
   private cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
     let target = node;
     for (;;) {
@@ -277,15 +275,14 @@ class CssMigration {
   private replaceUsePair(swap: UseSwap): void {
     const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
     const multiline = swap.ruleObject.text().includes("\n");
-    // Flag dropped css-loader options right where they lived.
+    // Flag dropped loader options right where they lived.
     let commentPrefix = "";
     if (swap.lostOptions.length) {
-      const message = `Removed css-loader options without a native CSS equivalent: ${swap.lostOptions.join(", ")}`;
+      const message = `Removed loader options without a native CSS equivalent: ${swap.lostOptions.join(", ")}`;
       commentPrefix = multiline ? `// ${message}\n${indent}` : `/* ${message} */ `;
     }
     if (swap.keptLoaders.length) {
-      // Kept loaders stay in `use`; native CSS parses their output. Guarded
-      // entries keep the original `.filter(...)` that drops their falsy branch.
+      // Guarded entries keep the original `.filter(...)` for their falsy branch.
       const keptTexts = swap.keptLoaders.map((loader) => loader.text());
       const keepsGuard = swap.keptLoaders.some(
         (loader) =>
