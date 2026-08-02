@@ -1,9 +1,13 @@
 module.exports = {
+  experiments: {
+    css: true,
+  },
   module: {
     rules: [
       {
         test: /\.css$/,
-        use: ["style-loader", { loader: "css-loader", options: { url: false, import: false } }],
+        // Removed css-loader options without a native CSS equivalent: url, import
+        type: "css/auto",
       },
     ],
   },

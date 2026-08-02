@@ -42,6 +42,7 @@ interface UseSwap {
   ruleObject: SgNode<Js>;
   keptLoaders: SgNode<Js>[];
   filterSuffix: string;
+  lostOptions: string[];
 }
 
 interface RulesArrayWork {
@@ -126,34 +127,39 @@ class CssMigration {
     return name !== null && REMOVABLE_LOADERS.has(name);
   }
 
-  // css-loader options that native CSS cannot replicate block the rule's
-  // migration: any key outside the droppable set (url, import, exportType, …),
-  // and `modules` when the rule also matches plain `.css` files — that option
-  // applies to every matched file, while `css/auto` only treats `*.module.*`
-  // names as CSS modules. An unreadable options value blocks too, to be safe.
-  private cssLoaderBlocksMigration(node: SgNode<Js>, ruleObject: SgNode<Js>): boolean {
+  // css-loader options native CSS cannot replicate: any key outside the
+  // droppable set (url, import, exportType, …), and `modules` when the rule
+  // also matches plain `.css` files — that option applies to every matched
+  // file, while `css/auto` only treats `*.module.*` names as CSS modules.
+  // These are still migrated, but flagged with a comment in the config.
+  private lostCssLoaderOptions(node: SgNode<Js>, ruleObject: SgNode<Js>): string[] {
     if (node.kind() === "binary_expression") {
       const right = node.field("right");
-      return right !== null && this.cssLoaderBlocksMigration(right, ruleObject);
+      return right ? this.lostCssLoaderOptions(right, ruleObject) : [];
     }
     if (node.kind() === "ternary_expression") {
       const consequence = node.field("consequence");
       const alternative = node.field("alternative");
-      return (
-        (consequence !== null && this.cssLoaderBlocksMigration(consequence, ruleObject)) ||
-        (alternative !== null && this.cssLoaderBlocksMigration(alternative, ruleObject))
-      );
+      return [
+        ...(consequence ? this.lostCssLoaderOptions(consequence, ruleObject) : []),
+        ...(alternative ? this.lostCssLoaderOptions(alternative, ruleObject) : []),
+      ];
     }
-    if (node.kind() !== "object" || loaderNameOf(node) !== "css-loader") return false;
+    if (node.kind() !== "object" || loaderNameOf(node) !== "css-loader") return [];
     const optionsPair = findPair(node, "options");
-    if (!optionsPair) return false;
+    if (!optionsPair) return [];
     const optionsValue = optionsPair.field("value");
-    if (!optionsValue || optionsValue.kind() !== "object") return true;
-    return pairsOf(optionsValue).some((optionPair) => {
+    if (!optionsValue || optionsValue.kind() !== "object") return ["options"];
+    const lost: string[] = [];
+    for (const optionPair of pairsOf(optionsValue)) {
       const name = keyName(optionPair);
-      if (name === "modules") return ruleMatchesFiles(ruleObject, ["/file.css"]);
-      return name === null || !DROPPABLE_CSS_LOADER_OPTIONS.has(name);
-    });
+      if (name === "modules") {
+        if (ruleMatchesFiles(ruleObject, ["/file.css"])) lost.push(name);
+      } else if (name === null || !DROPPABLE_CSS_LOADER_OPTIONS.has(name)) {
+        lost.push(name ?? "options");
+      }
+    }
+    return lost;
   }
 
   // The `new MiniCssExtractPlugin(...)` behind a plugins element, unwrapping
@@ -212,9 +218,9 @@ class CssMigration {
       if (!removable.length) continue;
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
-      if (elements.some((element) => this.cssLoaderBlocksMigration(element, ruleObject))) {
-        continue;
-      }
+      const lostOptions = [
+        ...new Set(elements.flatMap((element) => this.lostCssLoaderOptions(element, ruleObject))),
+      ];
       const arrayNode = ruleObject.parent();
       if (!arrayNode) continue;
       const key = arrayNode.range().start.index;
@@ -227,7 +233,8 @@ class CssMigration {
         const name = keyName(rulePair);
         return name === "test" || name === "use";
       });
-      if (trivialRule && !kept.length && arrayNode.kind() === "array") {
+      // A rule with lost options stays as a swap so the comment has a home.
+      if (trivialRule && !kept.length && !lostOptions.length && arrayNode.kind() === "array") {
         work.removedElements.push(ruleObject);
       } else {
         work.swaps.push({
@@ -235,6 +242,7 @@ class CssMigration {
           ruleObject,
           keptLoaders: kept,
           filterSuffix: filterSuffixOf(originalValue, value),
+          lostOptions,
         });
       }
     }
@@ -261,6 +269,14 @@ class CssMigration {
   }
 
   private replaceUsePair(swap: UseSwap): void {
+    const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
+    const multiline = swap.ruleObject.text().includes("\n");
+    // Flag dropped css-loader options right where they lived.
+    let commentPrefix = "";
+    if (swap.lostOptions.length) {
+      const message = `Removed css-loader options without a native CSS equivalent: ${swap.lostOptions.join(", ")}`;
+      commentPrefix = multiline ? `// ${message}\n${indent}` : `/* ${message} */ `;
+    }
     if (swap.keptLoaders.length) {
       // Kept loaders stay in `use`; native CSS parses their output. Guarded
       // entries keep the original `.filter(...)` that drops their falsy branch.
@@ -270,14 +286,13 @@ class CssMigration {
           loader.kind() === "binary_expression" || loader.kind() === "ternary_expression",
       );
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
-      const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
-      const separator = swap.ruleObject.text().includes("\n") ? `,\n${indent}` : ", ";
+      const separator = multiline ? `,\n${indent}` : ", ";
       this.editor.replace(
         swap.pair,
-        `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
+        `${commentPrefix}use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
       );
     } else {
-      this.editor.replace(swap.pair, 'type: "css/auto"');
+      this.editor.replace(swap.pair, `${commentPrefix}type: "css/auto"`);
     }
     // A surviving rule that matches `.css` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, CSS_SAMPLE_FILES)) return;
