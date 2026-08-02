@@ -12,6 +12,10 @@ This repository hosts codemods that upgrade webpack configurations and APIs, pub
 | `npm run lint` / `npm run lint:fix`            | ESLint check / autofix              |
 | `npm run type-check`                           | `tsc --noEmit` over `src/` files    |
 
+## Shared utilities
+
+Logic reused across codemods lives in the `packages/codemod-utils/` workspace (`@webpack/codemod-utils`): generic ast-grep helpers (`findPair`, `namedChildren`, `unwrapFilterCall`, …), webpack-config helpers (`loaderNameOf`, `findConfigObjectFor`, `ruleMatchesFiles`, `collectModuleBindings`), and the `ConfigEditor` class (grouped removals, brace-aware insertion, unused-import cleanup). Import it from a codemod by adding `"@webpack/codemod-utils": "*"` to its `dependencies`; the jssg runner bundles it. Prefer extending it over copying helpers between codemods.
+
 ## Creating a codemod
 
 Every codemod is a self-contained npm workspace under `codemods/<codemod-name>/`. Names are kebab-case and describe the migration (e.g. `hashed-module-ids-to-deterministic`); the published package is scoped as `@webpack/<codemod-name>`.

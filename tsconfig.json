@@ -10,6 +10,6 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["codemods/*/src/**/*.ts"],
+  "include": ["codemods/*/src/**/*.ts", "packages/*/src/**/*.ts"],
   "exclude": ["node_modules", "**/tests/**"]
 }

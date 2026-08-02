@@ -12,7 +12,7 @@ npm install
 
 ## Repository structure
 
-Each codemod lives in its own directory under [`codemods/`](codemods/) and is an npm workspace:
+Shared helpers used by several codemods live in [`packages/codemod-utils/`](packages/codemod-utils/) (`@webpack/codemod-utils`). Each codemod lives in its own directory under [`codemods/`](codemods/) and is an npm workspace:
 
 ```text
 codemods/<codemod-name>/

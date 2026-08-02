@@ -1,5 +1,20 @@
 import type Js from "@codemod.com/jssg-types/langs/javascript";
-import type { Edit, SgNode, SgRoot } from "@codemod.com/jssg-types/main";
+import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
+import {
+  ConfigEditor,
+  type ModuleBinding,
+  collectModuleBindings,
+  filterSuffixOf,
+  findConfigObjectFor,
+  findPair,
+  keyName,
+  lineIndent,
+  loaderNameOf,
+  namedChildren,
+  pairsOf,
+  ruleMatchesFiles,
+  unwrapFilterCall,
+} from "@webpack/codemod-utils";
 
 const PLUGIN_MODULE = "mini-css-extract-plugin";
 const REMOVABLE_LOADERS = new Set(["style-loader", "css-loader"]);
@@ -9,16 +24,7 @@ const PLUGIN_OPTION_TO_OUTPUT = new Map([
   ["filename", "cssFilename"],
   ["chunkFilename", "cssChunkFilename"],
 ]);
-
-interface Range {
-  start: number;
-  end: number;
-}
-
-interface PluginBinding {
-  name: string;
-  statement: SgNode<Js>;
-}
+const CSS_SAMPLE_FILES = ["/file.css", "/file.module.css"];
 
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
@@ -45,128 +51,17 @@ interface InsertAction {
   buildProperties: (indent: string, indentUnit: string) => string[];
 }
 
-// ---------- generic AST helpers ----------
-
-function rangeOf(node: SgNode<Js>): Range {
-  const range = node.range();
-  return { start: range.start.index, end: range.end.index };
-}
-
-function unquote(text: string): string {
-  return text.replace(/^["'`]/, "").replace(/["'`]$/, "");
-}
-
-function namedChildren(node: SgNode<Js>): SgNode<Js>[] {
-  return node.children().filter((child) => child.isNamed());
-}
-
-function keyName(pair: SgNode<Js>): string | null {
-  const key = pair.field("key");
-  return key ? unquote(key.text()) : null;
-}
-
-function pairsOf(objectNode: SgNode<Js>): SgNode<Js>[] {
-  return namedChildren(objectNode).filter((child) => child.kind() === "pair");
-}
-
-function findPair(objectNode: SgNode<Js>, name: string): SgNode<Js> | undefined {
-  return pairsOf(objectNode).find((pair) => keyName(pair) === name);
-}
-
-// Whitespace at the start of the line containing `index`.
-function lineIndent(source: string, index: number): string {
-  const lineStart = source.lastIndexOf("\n", index - 1) + 1;
-  const match = /^[ \t]*/.exec(source.slice(lineStart, index));
-  return match ? match[0] : "";
-}
-
-function isInsideAny(range: Range, ranges: Range[]): boolean {
-  return ranges.some((outer) => range.start >= outer.start && range.end <= outer.end);
-}
-
-// `[ ... ].filter(<any predicate>)` — return the inner array literal.
-function unwrapFilterCall(node: SgNode<Js>): SgNode<Js> {
-  if (node.kind() !== "call_expression") return node;
-  const callee = node.field("function");
-  if (!callee || callee.kind() !== "member_expression") return node;
-  if (callee.field("property")?.text() !== "filter") return node;
-  const receiver = callee.field("object");
-  return receiver && receiver.kind() === "array" ? receiver : node;
-}
-
-// The `.filter(...)` text that followed the array, e.g. `.filter((x) => !!x)`.
-function filterSuffixOf(originalValue: SgNode<Js>, arrayNode: SgNode<Js>): string {
-  if (originalValue.range().start.index === arrayNode.range().start.index) {
-    return originalValue.text().slice(arrayNode.text().length);
-  }
-  return "";
-}
-
-// ---------- webpack-specific recognition ----------
-
-// Loader name behind a `use` entry: a plain string, `require.resolve("...")`,
-// or `{ loader: <one of those> }`.
-function loaderNameOf(node: SgNode<Js>): string | null {
-  if (node.kind() === "string") return unquote(node.text());
-  if (node.kind() === "call_expression") {
-    const resolved = /^require\.resolve\(\s*(["'`][^"'`]+["'`])\s*\)$/.exec(node.text());
-    return resolved ? unquote(resolved[1]) : null;
-  }
-  if (node.kind() !== "object") return null;
-  const loaderValue = findPair(node, "loader")?.field("value");
-  return loaderValue ? loaderNameOf(loaderValue) : null;
-}
-
-// Whether the rule still claims plain `.css` resources after the transform —
-// if so it disables the `experiments.css: "auto"` default, which then needs
-// an explicit `true`. Unreadable conditions count as matching, to be safe.
-function ruleMatchesCssFiles(ruleObject: SgNode<Js>): boolean {
-  const testValue = findPair(ruleObject, "test")?.field("value");
-  if (!testValue) return true;
-  if (testValue.kind() !== "regex") return true;
-  const literal = /^\/(.*)\/([a-z]*)$/s.exec(testValue.text());
-  if (!literal) return true;
-  try {
-    const regex = new RegExp(literal[1], literal[2]);
-    return regex.test("/file.css") || regex.test("/file.module.css");
-  } catch {
-    return true;
-  }
-}
-
-// The enclosing webpack config object: nearest ancestor holding a `module` pair.
-function findConfigForRule(node: SgNode<Js>): SgNode<Js> | null {
-  let current = node.parent();
-  while (current) {
-    if (current.kind() === "pair" && keyName(current) === "module") {
-      const parent = current.parent();
-      if (parent && parent.kind() === "object") return parent;
-    }
-    current = current.parent();
-  }
-  return null;
-}
-
 class CssMigration {
-  private readonly rootNode: SgNode<Js>;
-  private readonly source: string;
-  private readonly pluginBindings: PluginBinding[] = [];
+  private readonly editor: ConfigEditor;
+  private readonly pluginBindings: ModuleBinding[];
   private readonly pluginNames: Set<string>;
 
-  private readonly edits: Edit[] = [];
-  private readonly editedRanges: Range[] = [];
   private readonly configPlans = new Map<number, ConfigPlan>();
-  // Removals of comma-separated list items are grouped per parent container so
-  // sibling removals in the same object/array never produce overlapping ranges.
-  private readonly pendingRemovals = new Map<number, { parent: SgNode<Js>; removed: Set<number> }>();
   private readonly insertActions: InsertAction[] = [];
-  // Fully-emptied objects that must keep their braces open for new properties.
-  private readonly topInsertTargets = new Set<number>();
 
   constructor(root: SgRoot<Js>) {
-    this.rootNode = root.root();
-    this.source = this.rootNode.text();
-    this.collectPluginBindings();
+    this.editor = new ConfigEditor(root.root());
+    this.pluginBindings = collectModuleBindings(this.editor.rootNode, PLUGIN_MODULE);
     this.pluginNames = new Set(this.pluginBindings.map((binding) => binding.name));
   }
 
@@ -174,34 +69,18 @@ class CssMigration {
     this.transformRules();
     this.transformPlugins();
     this.planConfigInsertions();
-    this.finalizeRemovals();
-    if (!this.edits.length) return null;
-    this.removeUnusedImports();
+    this.editor.finalizeRemovals();
+    if (!this.editor.hasEdits) return null;
+    for (const binding of this.pluginBindings) {
+      this.editor.removeBindingIfUnused(binding);
+    }
     for (const action of this.insertActions) {
-      this.insertIntoObject(action.target, action.buildProperties);
+      this.editor.insertIntoObject(action.target, action.buildProperties);
     }
-    return this.rootNode.commitEdits(this.edits);
+    return this.editor.commit();
   }
 
-  // ---------- plugin import detection ----------
-
-  private collectPluginBindings(): void {
-    const importPatterns = [
-      "const $NAME = require($SOURCE)",
-      "let $NAME = require($SOURCE)",
-      "var $NAME = require($SOURCE)",
-      "import $NAME from $SOURCE",
-    ];
-    for (const pattern of importPatterns) {
-      for (const statement of this.rootNode.findAll({ rule: { pattern } })) {
-        const name = statement.getMatch("NAME");
-        const moduleSource = statement.getMatch("SOURCE");
-        if (!name || !moduleSource) continue;
-        if (unquote(moduleSource.text()) !== PLUGIN_MODULE) continue;
-        this.pluginBindings.push({ name: name.text(), statement });
-      }
-    }
-  }
+  // ---------- plugin recognition ----------
 
   // `MiniCssExtractPlugin.loader` or `require("mini-css-extract-plugin").loader`.
   private isPluginLoaderExpression(node: SgNode<Js>): boolean {
@@ -272,11 +151,11 @@ class CssMigration {
     for (const work of rulesWork.values()) {
       const allElements = namedChildren(work.arrayNode);
       if (work.removedElements.length === allElements.length && !work.swaps.length) {
-        this.markForRemoval(this.escalateEmptyRulesArray(work.arrayNode));
+        this.editor.markForRemoval(this.escalateEmptyRulesArray(work.arrayNode));
         continue;
       }
       for (const element of work.removedElements) {
-        this.markForRemoval(element);
+        this.editor.markForRemoval(element);
       }
       for (const swap of work.swaps) {
         this.replaceUsePair(swap);
@@ -286,7 +165,7 @@ class CssMigration {
 
   private collectRulesWork(): Map<number, RulesArrayWork> {
     const rulesWork = new Map<number, RulesArrayWork>();
-    for (const pair of this.rootNode.findAll({ rule: { kind: "pair" } })) {
+    for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
       if (keyName(pair) !== "use") continue;
       const originalValue = pair.field("value");
       if (!originalValue) continue;
@@ -354,27 +233,25 @@ class CssMigration {
           loader.kind() === "binary_expression" || loader.kind() === "ternary_expression",
       );
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
-      const indent = lineIndent(this.source, swap.pair.range().start.index);
+      const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
       const separator = swap.ruleObject.text().includes("\n") ? `,\n${indent}` : ", ";
-      this.edits.push(
-        swap.pair.replace(
-          `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
-        ),
+      this.editor.replace(
+        swap.pair,
+        `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
       );
     } else {
-      this.edits.push(swap.pair.replace('type: "css/auto"'));
+      this.editor.replace(swap.pair, 'type: "css/auto"');
     }
-    this.editedRanges.push(rangeOf(swap.pair));
     // A surviving rule that matches `.css` turns the "auto" default off.
-    if (!ruleMatchesCssFiles(swap.ruleObject)) return;
-    const config = findConfigForRule(swap.pair);
+    if (!ruleMatchesFiles(swap.ruleObject, CSS_SAMPLE_FILES)) return;
+    const config = findConfigObjectFor(swap.pair);
     if (config) this.planFor(config).needsExperimentsCss = true;
   }
 
   // ---------- plugins ----------
 
   private transformPlugins(): void {
-    for (const pair of this.rootNode.findAll({ rule: { kind: "pair" } })) {
+    for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
       if (keyName(pair) !== "plugins") continue;
       let value = pair.field("value");
       if (value) value = unwrapFilterCall(value);
@@ -384,9 +261,9 @@ class CssMigration {
       if (!removed.length) continue;
       this.collectPluginOptions(pair, removed);
       if (removed.length === elements.length) {
-        this.markForRemoval(pair);
+        this.editor.markForRemoval(pair);
       } else {
-        for (const element of removed) this.markForRemoval(element);
+        for (const element of removed) this.editor.markForRemoval(element);
       }
     }
   }
@@ -428,7 +305,8 @@ class CssMigration {
       this.planExperimentsCss(plan, topProperties);
       this.planOutputProps(plan, topProperties);
       if (topProperties.length) {
-        this.topInsertTargets.add(plan.config.range().start.index);
+        // A fully-emptied config keeps its braces open for these properties.
+        this.editor.keepBracesOpen(plan.config);
         this.insertActions.push({
           target: plan.config,
           buildProperties: (indent, unit) => topProperties.map((build) => build(indent, unit)),
@@ -445,7 +323,10 @@ class CssMigration {
     const experimentsValue = findPair(plan.config, "experiments")?.field("value");
     if (experimentsValue && experimentsValue.kind() === "object") {
       if (!findPair(experimentsValue, "css")) {
-        this.insertActions.push({ target: experimentsValue, buildProperties: () => ["css: true"] });
+        this.insertActions.push({
+          target: experimentsValue,
+          buildProperties: () => ["css: true"],
+        });
       }
     } else if (!experimentsValue) {
       topProperties.push((indent, unit) =>
@@ -476,135 +357,6 @@ class CssMigration {
           ? `output: {\n${propTexts.map((text) => `${indent}${unit}${text}`).join(",\n")},\n${indent}}`
           : `output: { ${propTexts.join(", ")} }`,
       );
-    }
-  }
-
-  // Insert properties right after an object's opening brace, matching its layout.
-  private insertIntoObject(
-    objectNode: SgNode<Js>,
-    buildProperties: (indent: string, indentUnit: string) => string[],
-  ): void {
-    const insertAt = objectNode.range().start.index + 1;
-    const properties = namedChildren(objectNode);
-    const multiline = objectNode.text().includes("\n") && properties.length > 0;
-    let insertedText: string;
-    if (multiline) {
-      const indent = lineIndent(this.source, properties[0].range().start.index);
-      const indentUnit = indent.includes("\t") ? "\t" : indent || "  ";
-      insertedText = buildProperties(indent, indentUnit)
-        .map((property) => `\n${indent}${property},`)
-        .join("");
-    } else if (properties.length) {
-      insertedText = ` ${buildProperties("", "").join(", ")},`;
-    } else {
-      insertedText = ` ${buildProperties("", "").join(", ")} `;
-    }
-    this.edits.push({ startPos: insertAt, endPos: insertAt, insertedText });
-  }
-
-  // ---------- removals ----------
-
-  private removeText(range: Range): void {
-    this.edits.push({ startPos: range.start, endPos: range.end, insertedText: "" });
-    this.editedRanges.push(range);
-  }
-
-  private markForRemoval(node: SgNode<Js>): void {
-    const parent = node.parent();
-    if (!parent) return;
-    const key = parent.range().start.index;
-    let group = this.pendingRemovals.get(key);
-    if (!group) {
-      group = { parent, removed: new Set() };
-      this.pendingRemovals.set(key, group);
-    }
-    group.removed.add(node.range().start.index);
-  }
-
-  private finalizeRemovals(): void {
-    for (const { parent, removed } of this.pendingRemovals.values()) {
-      const children = namedChildren(parent);
-      if (children.every((child) => removed.has(child.range().start.index))) {
-        this.clearContainer(parent, children);
-        continue;
-      }
-      this.removeChildRuns(children, removed);
-    }
-  }
-
-  private clearContainer(parent: SgNode<Js>, children: SgNode<Js>[]): void {
-    if (this.topInsertTargets.has(parent.range().start.index) && children.length) {
-      // New properties will be inserted after "{" — clear the content only.
-      const first = children[0].range().start.index;
-      const lineStart = this.source.lastIndexOf("\n", first - 1) + 1;
-      this.removeText({
-        start: lineStart > parent.range().start.index ? lineStart : first,
-        end: parent.range().end.index - 1,
-      });
-    } else {
-      this.edits.push(parent.replace(parent.kind() === "array" ? "[]" : "{}"));
-      this.editedRanges.push(rangeOf(parent));
-    }
-  }
-
-  // Delete each contiguous run of removed children up to the next kept
-  // sibling, or back to the previous kept one for a trailing run.
-  private removeChildRuns(children: SgNode<Js>[], removed: Set<number>): void {
-    let index = 0;
-    while (index < children.length) {
-      if (!removed.has(children[index].range().start.index)) {
-        index += 1;
-        continue;
-      }
-      let runEnd = index;
-      while (
-        runEnd + 1 < children.length &&
-        removed.has(children[runEnd + 1].range().start.index)
-      ) {
-        runEnd += 1;
-      }
-      const next = children[runEnd + 1];
-      if (next) {
-        this.removeText({
-          start: children[index].range().start.index,
-          end: next.range().start.index,
-        });
-      } else {
-        this.removeText({
-          start: children[index - 1].range().end.index,
-          end: children[runEnd].range().end.index,
-        });
-      }
-      index = runEnd + 1;
-    }
-  }
-
-  // ---------- imports ----------
-
-  // Drop the plugin import once no reference survives outside the edited ranges.
-  private removeUnusedImports(): void {
-    for (const binding of this.pluginBindings) {
-      const statementRange = rangeOf(binding.statement);
-      const survivingReference = this.rootNode
-        .findAll({ rule: { kind: "identifier" } })
-        .some((identifier) => {
-          if (identifier.text() !== binding.name) return false;
-          const range = rangeOf(identifier);
-          if (range.start >= statementRange.start && range.end <= statementRange.end) return false;
-          return !isInsideAny(range, this.editedRanges);
-        });
-      if (survivingReference) continue;
-      let end = statementRange.end;
-      if (this.source[end] === "\r") end += 1;
-      if (this.source[end] === "\n") end += 1;
-      // At the top of the file also swallow the blank line that separated it.
-      while (
-        statementRange.start === 0 &&
-        (this.source[end] === "\n" || this.source[end] === "\r")
-      ) {
-        end += 1;
-      }
-      this.edits.push({ startPos: statementRange.start, endPos: end, insertedText: "" });
     }
   }
 }

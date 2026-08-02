@@ -1,0 +1,27 @@
+{
+  "name": "@webpack/codemod-utils",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Shared ast-grep helpers for webpack codemods.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "test": "node -e \"\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webpack/codemods.git",
+    "directory": "packages/codemod-utils",
+    "bugs": "https://github.com/webpack/codemods/issues"
+  },
+  "author": "bjohansebas (Sebastian Beltran)",
+  "license": "MIT",
+  "devDependencies": {
+    "@codemod.com/jssg-types": "^1.6.2"
+  }
+}

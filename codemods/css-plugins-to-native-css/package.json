@@ -16,6 +16,9 @@
   "author": "bjohansebas (Sebastian Beltran)",
   "license": "MIT",
   "homepage": "https://github.com/webpack/codemods/blob/main/codemods/css-plugins-to-native-css/README.md",
+  "dependencies": {
+    "@webpack/codemod-utils": "*"
+  },
   "devDependencies": {
     "@codemod.com/jssg-types": "^1.6.2"
   }
