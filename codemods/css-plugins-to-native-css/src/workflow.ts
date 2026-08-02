@@ -82,18 +82,34 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     );
   };
 
-  // Loader name behind a `use` entry: a plain string or `{ loader: "..." }`.
+  // Loader name behind a `use` entry: a plain string, `require.resolve("...")`,
+  // or `{ loader: <one of those> }`.
   const loaderNameOf = (node: SgNode<Js>): string | null => {
     if (node.kind() === "string") return unquote(node.text());
+    if (node.kind() === "call_expression") {
+      const resolved = /^require\.resolve\(\s*(["'`][^"'`]+["'`])\s*\)$/.exec(node.text());
+      return resolved ? unquote(resolved[1]) : null;
+    }
     if (node.kind() !== "object") return null;
     const loaderValue = findPair(node, "loader")?.field("value");
-    return loaderValue && loaderValue.kind() === "string" ? unquote(loaderValue.text()) : null;
+    return loaderValue ? loaderNameOf(loaderValue) : null;
   };
 
   // A `use` entry replaceable by native CSS: a known loader string, the
-  // plugin's `.loader`, or `{ loader: <one of those>, ... }`.
+  // plugin's `.loader`, `{ loader: <one of those>, ... }`, or the classic
+  // dev/prod ternary where both branches are replaceable.
   const isRemovableUseElement = (node: SgNode<Js>): boolean => {
     if (isPluginLoaderExpression(node)) return true;
+    if (node.kind() === "ternary_expression") {
+      const consequence = node.field("consequence");
+      const alternative = node.field("alternative");
+      return (
+        consequence !== null &&
+        alternative !== null &&
+        isRemovableUseElement(consequence) &&
+        isRemovableUseElement(alternative)
+      );
+    }
     if (node.kind() === "object") {
       const loaderValue = findPair(node, "loader")?.field("value");
       if (loaderValue && isPluginLoaderExpression(loaderValue)) return true;
@@ -317,16 +333,38 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     }
   }
 
+  // The `new MiniCssExtractPlugin(...)` behind a plugins element, unwrapping the
+  // `isProd && new Plugin()` / `isDev ? false : new Plugin()` guard patterns.
+  const pluginInstantiationOf = (element: SgNode<Js>): SgNode<Js> | null => {
+    const candidates: (SgNode<Js> | null)[] = [element];
+    if (element.kind() === "binary_expression" && element.field("operator")?.text() === "&&") {
+      candidates.push(element.field("right"));
+    }
+    if (element.kind() === "ternary_expression") {
+      candidates.push(element.field("consequence"), element.field("alternative"));
+    }
+    for (const candidate of candidates) {
+      if (!candidate || candidate.kind() !== "new_expression") continue;
+      const constructorNode = candidate.field("constructor");
+      if (constructorNode && pluginNames.has(constructorNode.text())) return candidate;
+    }
+    return null;
+  };
+
   for (const pair of rootNode.findAll({ rule: { kind: "pair" } })) {
     if (keyName(pair) !== "plugins") continue;
-    const value = pair.field("value");
+    let value = pair.field("value");
+    // `plugins: [ ... ].filter(Boolean)` — operate on the inner array literal.
+    if (value && value.kind() === "call_expression") {
+      const callee = value.field("function");
+      if (callee && callee.kind() === "member_expression") {
+        const receiver = callee.field("object");
+        if (receiver && receiver.kind() === "array") value = receiver;
+      }
+    }
     if (!value || value.kind() !== "array") continue;
     const elements = namedChildren(value);
-    const removed = elements.filter((element) => {
-      if (element.kind() !== "new_expression") return false;
-      const constructorNode = element.field("constructor");
-      return constructorNode !== null && pluginNames.has(constructorNode.text());
-    });
+    const removed = elements.filter((element) => pluginInstantiationOf(element) !== null);
     if (!removed.length) continue;
     // Only `filename`/`chunkFilename` have native counterparts; the rest of the
     // plugin options (ignoreOrder, insert, attributes, linkType, runtime) don't.
@@ -337,7 +375,7 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     const configObject = pair.parent();
     for (const element of removed) {
       if (!configObject || configObject.kind() !== "object") break;
-      const argumentsNode = element.field("arguments");
+      const argumentsNode = pluginInstantiationOf(element)?.field("arguments");
       const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
       if (!optionsObject || optionsObject.kind() !== "object") continue;
       const plan = planFor(configObject);
