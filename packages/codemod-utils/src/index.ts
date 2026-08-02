@@ -92,9 +92,14 @@ export class ConfigEditor {
     return this.edits.length > 0;
   }
 
-  // Replacement text may use "\n"; it is converted to the source's EOL.
+  // Generated text may mix "\n" with source fragments that already carry the
+  // file's EOL — normalize first so the conversion never doubles a "\r".
+  private toSourceEol(text: string): string {
+    return text.split("\r\n").join("\n").split("\n").join(this.eol);
+  }
+
   replace(node: SgNode<Js>, text: string): void {
-    this.edits.push(node.replace(text.split("\n").join(this.eol)));
+    this.edits.push(node.replace(this.toSourceEol(text)));
     this.editedRanges.push(rangeOf(node));
   }
 
@@ -153,7 +158,7 @@ export class ConfigEditor {
     this.edits.push({
       startPos: insertAt,
       endPos: insertAt,
-      insertedText: insertedText.split("\n").join(this.eol),
+      insertedText: this.toSourceEol(insertedText),
     });
   }
 

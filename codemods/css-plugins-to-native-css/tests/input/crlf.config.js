@@ -4,7 +4,14 @@ module.exports = {
       {
         test: /\.css$/,
         include: "src",
-        use: ["style-loader", "css-loader"],
+        use: [
+          "style-loader",
+          "css-loader",
+          {
+            loader: "postcss-loader",
+            options: { postcssOptions: {} },
+          },
+        ],
       },
     ],
   },

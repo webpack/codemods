@@ -7,6 +7,10 @@ module.exports = {
       {
         test: /\.css$/,
         include: "src",
+        use: [{
+            loader: "postcss-loader",
+            options: { postcssOptions: {} },
+          }],
         type: "css/auto",
       },
     ],
