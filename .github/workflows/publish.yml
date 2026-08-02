@@ -41,6 +41,7 @@ jobs:
         id: changesets
         uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
+          version: npm run version
           publish: npx changeset tag
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -92,9 +93,17 @@ jobs:
               });
           ')
           echo "path=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Publishing $PKG_NAME from $DIR"
+          # Internal packages (no codemod.yaml) are versioned but not published.
+          if [ -f "$DIR/codemod.yaml" ]; then
+            echo "has_manifest=true" >> "$GITHUB_OUTPUT"
+            echo "Publishing $PKG_NAME from $DIR"
+          else
+            echo "has_manifest=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $PKG_NAME ($DIR has no codemod.yaml)"
+          fi
 
       - name: Publish to Codemod registry
+        if: steps.dir.outputs.has_manifest == 'true'
         uses: codemod/publish-action@dd6c8dbc5ceb1a6146feba41481d88b43da50024 # v1
         with:
           path: ${{ steps.dir.outputs.path }}
