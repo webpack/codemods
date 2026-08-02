@@ -153,17 +153,22 @@ export class ConfigEditor {
   // Fully-emptied objects that must keep their braces open for new properties.
   private readonly keepOpenTargets = new Set<number>();
 
+  // Line ending of the source file; generated text must use it too.
+  readonly eol: string;
+
   constructor(rootNode: SgNode<Js>) {
     this.rootNode = rootNode;
     this.source = rootNode.text();
+    this.eol = this.source.includes("\r\n") ? "\r\n" : "\n";
   }
 
   get hasEdits(): boolean {
     return this.edits.length > 0;
   }
 
+  // Replacement text may use "\n"; it is converted to the source's EOL.
   replace(node: SgNode<Js>, text: string): void {
-    this.edits.push(node.replace(text));
+    this.edits.push(node.replace(text.split("\n").join(this.eol)));
     this.editedRanges.push(rangeOf(node));
   }
 
@@ -219,7 +224,11 @@ export class ConfigEditor {
     } else {
       insertedText = ` ${buildProperties("", "").join(", ")} `;
     }
-    this.edits.push({ startPos: insertAt, endPos: insertAt, insertedText });
+    this.edits.push({
+      startPos: insertAt,
+      endPos: insertAt,
+      insertedText: insertedText.split("\n").join(this.eol),
+    });
   }
 
   // Drop the binding's statement once no reference survives outside the edited
