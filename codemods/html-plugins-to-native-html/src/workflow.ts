@@ -170,6 +170,7 @@ class HtmlMigration {
   private readonly configFileName: string;
   private readonly fileSystem: FsModule | null;
   private readonly pathModule: PathModule | null;
+  private injectDebug = "";
   private pluginMigrated = false;
   private pluginRetained = false;
   // Binding statements rewritten in place (e.g. into the `html` import).
@@ -1049,7 +1050,7 @@ class HtmlMigration {
     const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
     const comment = injected
       ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
-      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
+      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script> [${this.injectDebug}]`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
       const indent = lineIndent(this.editor.source, entryPair.range().start.index);
@@ -1071,14 +1072,20 @@ class HtmlMigration {
   private injectScriptIntoTemplate(templateQuoted: string, entryRel: string): string | null {
     const fs = this.fileSystem;
     const path = this.pathModule;
-    if (!fs || !path || !this.configFileName) return null;
+    if (!fs || !path || !this.configFileName) {
+      this.injectDebug = `no-modules fs=${Boolean(fs)} path=${Boolean(path)} file=${this.configFileName}`;
+      return null;
+    }
     const templateRel = unquote(templateQuoted);
     if (!templateRel.startsWith(".") || !entryRel.startsWith(".")) return null;
     try {
       const configDir = path.dirname(this.configFileName);
       const templateFile = path.resolve(configDir, templateRel);
       const entryFile = path.resolve(configDir, entryRel);
-      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
+      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) {
+        this.injectDebug = `missing file=${this.configFileName} dir=${configDir} tpl=${templateFile}(${fs.existsSync(templateFile)}) entry=${entryFile}(${fs.existsSync(entryFile)})`;
+        return null;
+      }
       const relative = path.relative(path.dirname(templateFile), entryFile).replace(/\\/g, "/");
       const scriptSrc = relative.startsWith(".") ? relative : `./${relative}`;
       const html = fs.readFileSync(templateFile, "utf8");
@@ -1093,7 +1100,8 @@ class HtmlMigration {
         insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
       );
       return scriptSrc;
-    } catch {
+    } catch (error) {
+      this.injectDebug = `error ${(error as Error).message}`;
       return null;
     }
   }
