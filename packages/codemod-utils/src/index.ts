@@ -23,8 +23,18 @@ export * from "./imports";
 export function loaderNameOf(node: SgNode<Js>): string | null {
   if (node.kind() === "string") return unquote(node.text());
   if (node.kind() === "call_expression") {
-    const resolved = /^require\.resolve\(\s*(["'`][^"'`]+["'`])\s*\)$/.exec(node.text());
-    return resolved ? unquote(resolved[1]) : null;
+    const callee = node.field("function");
+    if (
+      !callee ||
+      callee.kind() !== "member_expression" ||
+      callee.field("object")?.text() !== "require" ||
+      callee.field("property")?.text() !== "resolve"
+    ) {
+      return null;
+    }
+    const argumentsNode = node.field("arguments");
+    const args = argumentsNode ? namedChildren(argumentsNode) : [];
+    return args.length === 1 && args[0].kind() === "string" ? unquote(args[0].text()) : null;
   }
   if (node.kind() !== "object") return null;
   const loaderValue = findPair(node, "loader")?.field("value");
@@ -38,10 +48,10 @@ export function ruleMatchesFiles(ruleObject: SgNode<Js>, sampleFiles: string[]):
   const testValue = findPair(ruleObject, "test")?.field("value");
   if (!testValue) return true;
   if (testValue.kind() !== "regex") return true;
-  const literal = /^\/(.*)\/([a-z]*)$/s.exec(testValue.text());
-  if (!literal) return true;
+  const pattern = testValue.field("pattern");
+  if (!pattern) return true;
   try {
-    const regex = new RegExp(literal[1], literal[2]);
+    const regex = new RegExp(pattern.text(), testValue.field("flags")?.text() ?? "");
     return sampleFiles.some((file) => regex.test(file));
   } catch {
     return true;
