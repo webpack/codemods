@@ -25,3 +25,12 @@ nodes:
           exclude:
             - "**/node_modules/**"
           language: typescript
+      - name: Remove mini-css-extract-plugin, style-loader, and css-loader from package.json
+        js-ast-grep:
+          js_file: src/remove-dependencies.ts
+          base_path: .
+          include:
+            - "**/package.json"
+          exclude:
+            - "**/node_modules/**"
+          language: json

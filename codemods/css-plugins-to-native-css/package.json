@@ -5,7 +5,9 @@
   "description": "Migrate mini-css-extract-plugin and style-loader/css-loader rules to webpack's native CSS support (experiments.css).",
   "type": "module",
   "scripts": {
-    "test": "npx codemod jssg test -l typescript ./src/workflow.ts"
+    "test": "npm run test:workflow && npm run test:dependencies",
+    "test:workflow": "npx codemod jssg test -l typescript ./src/workflow.ts",
+    "test:dependencies": "npx codemod jssg test -l json ./src/remove-dependencies.ts ./tests/remove-dependencies"
   },
   "repository": {
     "type": "git",

@@ -86,4 +86,4 @@ module.exports = {
 };
 ```
 
-Remember to also remove `mini-css-extract-plugin`, `style-loader`, and `css-loader` from your `package.json` if nothing else uses them.
+The codemod also removes `mini-css-extract-plugin`, `style-loader`, and `css-loader` from your `package.json` (`dependencies` and `devDependencies`). If other tooling in the repo still uses them (Storybook, test setups, …), reinstall the ones you need.
