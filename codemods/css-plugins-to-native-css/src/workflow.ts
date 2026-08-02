@@ -261,10 +261,19 @@ class CssMigration {
   // Webpack owns the rule when its array hangs on a `rules`/`oneOf` pair, the
   // config has a `module` ancestor, or the file imports the extract plugin.
   private isWebpackRuleContext(usePair: SgNode<Js>, arrayNode: SgNode<Js>): boolean {
-    const listPair = arrayNode.parent();
-    if (listPair && listPair.kind() === "pair") {
-      const name = keyName(listPair);
+    const owner = arrayNode.parent();
+    if (owner && owner.kind() === "pair") {
+      const name = keyName(owner);
       if (name === "rules" || name === "oneOf") return true;
+    }
+    // Assignments into another tool's mutable config parameter
+    // (`config.module.rules = [...]` in next.config, Storybook, …) are not ours.
+    if (
+      owner &&
+      owner.kind() === "assignment_expression" &&
+      owner.field("left")?.text() !== "module.exports"
+    ) {
+      return false;
     }
     if (this.pluginNames.size > 0) return true;
     return findConfigObjectFor(usePair) !== null;
