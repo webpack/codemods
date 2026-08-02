@@ -2,6 +2,8 @@
 
 Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader`/`css-loader` rules to webpack's [native CSS support](https://webpack.js.org/configuration/experiments/#experimentscss) (`experiments.css`).
 
+> Requires **webpack >= 5.109.0**: the transform relies on the `experiments.css: "auto"` default introduced there, which enables native CSS whenever no user rule matches `.css` files.
+
 ## What it does
 
 - Removes rules that only wire up `style-loader`, `css-loader`, and/or `MiniCssExtractPlugin.loader` (cascading to empty `rules`/`module` entries): with no user rule matching `.css`, webpack's `experiments.css: "auto"` default enables native CSS by itself, so no explicit option is needed.
