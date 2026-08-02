@@ -159,6 +159,28 @@ function applyRelativePath(baseSegments: string[], relative: string): string[] |
   return segments;
 }
 
+// Path forms to try against the runtime's sandboxed fs: native separators,
+// forward slashes, and cwd-relative — on Windows the sandbox normalizes
+// absolute drive paths into a form its allow-list check rejects, while a
+// relative path resolves internally and passes.
+function pathCandidates(segments: string[], separator: string): string[] {
+  const list = [segments.join(separator)];
+  const forward = segments.join("/");
+  if (!list.includes(forward)) list.push(forward);
+  const cwd = (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.();
+  if (cwd) {
+    const cwdSegments = pathSegments(cwd);
+    const isUnder =
+      cwdSegments.length > 0 &&
+      cwdSegments.length < segments.length &&
+      cwdSegments.every(
+        (segment, index) => segment.toLowerCase() === segments[index].toLowerCase(),
+      );
+    if (isUnder) list.push(segments.slice(cwdSegments.length).join("/"));
+  }
+  return list;
+}
+
 // Relative URL (forward slashes) from a directory to a file.
 function relativeUrl(fromDirSegments: string[], toSegments: string[]): string {
   let common = 0;
@@ -204,7 +226,6 @@ class HtmlMigration {
   private readonly configPlans = new Map<number, ConfigPlan>();
   private readonly configFileName: string;
   private readonly fileSystem: FsModule | null;
-  private injectDebug = "";
   private pluginMigrated = false;
   private pluginRetained = false;
   // Binding statements rewritten in place (e.g. into the `html` import).
@@ -1083,7 +1104,7 @@ class HtmlMigration {
     const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
     const comment = injected
       ? `The template is now the entry and loads the previous entry via <script defer src="${injected}"></script>`
-      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script> [${this.injectDebug}]`;
+      : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
       const indent = lineIndent(this.editor.source, entryPair.range().start.index);
@@ -1116,19 +1137,11 @@ class HtmlMigration {
       const templateSegments = applyRelativePath(configSegments, templateRel);
       const entrySegments = applyRelativePath(configSegments, entryRel);
       if (!templateSegments || !entrySegments) return null;
-      const templateFile = templateSegments.join(separator);
-      const entryFile = entrySegments.join(separator);
-      const probe = (candidate: string): string => {
-        try {
-          return `len${fs.readFileSync(candidate, "utf8").length}`;
-        } catch (error) {
-          return `ERR:${(error as Error).message}`;
-        }
-      };
-      this.injectDebug = `r1=${probe(templateFile)} r2=${probe(templateFile.replace(/\\/g, "/"))} r3=${probe(this.configFileName)} stat=${typeof fs.statSync} access=${typeof fs.accessSync}`;
-      if (!fs.existsSync(templateFile) || !fs.existsSync(entryFile)) return null;
+      const template = this.readFirst(fs, pathCandidates(templateSegments, separator));
+      if (!template) return null;
+      if (!this.readFirst(fs, pathCandidates(entrySegments, separator))) return null;
       const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
-      const html = fs.readFileSync(templateFile, "utf8");
+      const html = template.content;
       // Already loaded (e.g. a re-run) — nothing to write.
       const sourcePattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi;
       for (let match = sourcePattern.exec(html); match; match = sourcePattern.exec(html)) {
@@ -1136,13 +1149,28 @@ class HtmlMigration {
         if (existing === scriptSrc) return scriptSrc;
       }
       fs.writeFileSync(
-        templateFile,
+        template.path,
         insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
       );
       return scriptSrc;
     } catch {
       return null;
     }
+  }
+
+  // First candidate form the sandboxed runtime lets us read.
+  private readFirst(
+    fs: FsModule,
+    candidates: string[],
+  ): { path: string; content: string } | null {
+    for (const candidate of candidates) {
+      try {
+        return { path: candidate, content: fs.readFileSync(candidate, "utf8") };
+      } catch {
+        // Try the next path form.
+      }
+    }
+    return null;
   }
 
   // A string entry value the template path can take over: the value itself, a
