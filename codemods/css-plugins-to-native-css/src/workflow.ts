@@ -61,6 +61,7 @@ interface OptionFindings {
   generatorProps: RuleProp[];
   parserProps: RuleProp[];
   cssSourceMapOff: boolean;
+  cssPublicPath: string | null;
 }
 
 interface UseSwap {
@@ -71,6 +72,7 @@ interface UseSwap {
   lostOptions: string[];
   generatorProps: RuleProp[];
   parserProps: RuleProp[];
+  cssPublicPath: string | null;
 }
 
 interface RulesArrayWork {
@@ -210,7 +212,13 @@ class CssMigration {
       const value = optionPair.field("value");
       if (name !== null && droppable.has(name)) continue;
       if (loaderName === EXTRACT_LOADER_NAME && name === "publicPath" && value) {
-        if (!this.isRedundantExtractPublicPath(value, ruleObject)) {
+        // A genuinely different base URL becomes an issuer-scoped asset rule;
+        // non-literal values can't be carried over safely.
+        if (this.isRedundantExtractPublicPath(value, ruleObject)) {
+          // Extraction-relative workaround — native CSS resolves this itself.
+        } else if (value.kind() === "string") {
+          findings.cssPublicPath ??= value.text();
+        } else {
           findings.lost.push(`${EXTRACT_LOADER_NAME}.publicPath`);
         }
         continue;
@@ -384,6 +392,7 @@ class CssMigration {
         generatorProps: [],
         parserProps: [],
         cssSourceMapOff: false,
+        cssPublicPath: null,
       };
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
@@ -413,7 +422,8 @@ class CssMigration {
         kept.length > 0 ||
         lostOptions.length > 0 ||
         generatorProps.length > 0 ||
-        parserProps.length > 0;
+        parserProps.length > 0 ||
+        findings.cssPublicPath !== null;
       if (!survives) {
         work.removedElements.push(ruleObject);
       } else {
@@ -425,6 +435,7 @@ class CssMigration {
           lostOptions,
           generatorProps,
           parserProps,
+          cssPublicPath: findings.cssPublicPath,
         });
       }
     }
@@ -482,6 +493,16 @@ class CssMigration {
       replacement += `${separator}${key}: { ${texts.join(", ")} }`;
     }
     this.editor.replace(swap.pair, replacement);
+    if (swap.cssPublicPath !== null) {
+      // Assets referenced from this rule's files keep their custom base URL.
+      const issuer = findPair(swap.ruleObject, "test")?.field("value")?.text() ?? "/\\.css$/";
+      const ruleIndent = lineIndent(this.editor.source, swap.ruleObject.range().start.index);
+      const sibling = `{ issuer: ${issuer}, generator: { publicPath: ${swap.cssPublicPath} } }`;
+      this.editor.insertAfter(
+        swap.ruleObject,
+        multiline ? `,\n${ruleIndent}${sibling}` : `, ${sibling}`,
+      );
+    }
     // A surviving rule that matches `.css` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, CSS_SAMPLE_FILES)) return;
     const config = findConfigObjectFor(swap.pair);

@@ -9,9 +9,9 @@ module.exports = {
     rules: [
       {
         test: /\.css$/,
-        // Removed loader options without a native CSS equivalent: MiniCssExtractPlugin.loader.publicPath
         type: "css/auto",
       },
+      { issuer: /\.css$/, generator: { publicPath: "https://cdn.example.com/" } },
     ],
   },
 };

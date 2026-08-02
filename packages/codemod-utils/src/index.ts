@@ -112,6 +112,11 @@ export class ConfigEditor {
     this.edits.push(edit);
   }
 
+  insertAfter(node: SgNode<Js>, text: string): void {
+    const position = node.range().end.index;
+    this.edits.push({ startPos: position, endPos: position, insertedText: this.toSourceEol(text) });
+  }
+
   // Generated text may mix "\n" with source fragments that already carry the
   // file's EOL — normalize both so the conversion never doubles a "\r".
   private toSourceEol(text: string): string {

@@ -17,7 +17,7 @@ Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader
 
 The remaining `MiniCssExtractPlugin` options have **no native equivalent** and are dropped: `ignoreOrder`, `insert`, `attributes`, `linkType`, `runtime`, and `experimentalUseImportModule`. Review your build if you relied on them.
 
-About the loader's `publicPath`: relative values (`"../../"`) existed to fix `url()` resolution inside extracted CSS — native CSS handles that by itself, so they are dropped silently, as are values that just repeat `output.publicPath`. Only a genuinely different base URL is flagged with a comment; its manual home is `generator.publicPath` on the matching asset rules.
+About the loader's `publicPath`: relative values (`"../../"`) existed to fix `url()` resolution inside extracted CSS — native CSS handles that by itself, so they are dropped silently, as are values that just repeat `output.publicPath`. A genuinely different base URL is translated into an issuer-scoped asset rule (`{ issuer: <the rule's test>, generator: { publicPath: … } }`) so assets referenced from those styles keep their custom URL; only non-literal values fall back to a review comment.
 
 Only rules the file demonstrably owns as webpack config are transformed (a `rules`/`oneOf` array, a `module` block, or an import of `mini-css-extract-plugin`). Rule fragments pushed into another tool's webpack config — Storybook's `webpackFinal`, craco, and similar — are never modified: there the config is a mutated parameter with no literal object to receive `experiments.css: true`, and the tool's own base config registers CSS rules that keep the `"auto"` default off, so a partial migration would break the build.
 
