@@ -1,0 +1,12 @@
+{
+  "name": "app",
+  "dependencies": {
+    "react": "^18.0.0",
+    "mini-css-extract-plugin": "^2.9.0"
+  },
+  "devDependencies": {
+    "css-loader": "^7.0.0",
+    "style-loader": "^4.0.0",
+    "webpack": "^5.109.0"
+  }
+}

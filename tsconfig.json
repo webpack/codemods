@@ -1,15 +1,15 @@
 {
   "compilerOptions": {
-    "target": "ES2022",
+    "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
+    "lib": ["ES2023"],
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["codemods/*/src/**/*.ts"],
+  "include": ["codemods/*/src/**/*.ts", "packages/*/src/**/*.ts"],
   "exclude": ["node_modules", "**/tests/**"]
 }

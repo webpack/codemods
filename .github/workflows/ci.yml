@@ -40,6 +40,14 @@ jobs:
       - name: Run type check
         run: npm run type-check
 
+      - name: Check utils changes have codemod changesets
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          node .github/scripts/check-utils-changesets.mjs "origin/$BASE_REF"
+
   test:
     strategy:
       fail-fast: false

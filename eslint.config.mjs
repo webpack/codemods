@@ -12,4 +12,13 @@ export default tseslint.config(
       reportUnusedDisableDirectives: "error",
     },
   },
+  {
+    files: [".github/scripts/**/*.mjs"],
+    languageOptions: {
+      globals: {
+        console: "readonly",
+        process: "readonly",
+      },
+    },
+  },
 );

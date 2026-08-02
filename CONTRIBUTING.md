@@ -12,7 +12,7 @@ npm install
 
 ## Repository structure
 
-Each codemod lives in its own directory under [`codemods/`](codemods/) and is an npm workspace:
+Shared helpers used by several codemods live in [`packages/codemod-utils/`](packages/codemod-utils/) (`@webpack/codemod-utils`). Each codemod lives in its own directory under [`codemods/`](codemods/) and is an npm workspace:
 
 ```text
 codemods/<codemod-name>/
@@ -23,8 +23,7 @@ codemods/<codemod-name>/
 ├── src/
 │   └── workflow.ts    # The transform, written with jssg (ast-grep)
 └── tests/
-    ├── input/         # Fixture files before the transform
-    └── expected/      # The same files after the transform
+    └── <case-name>/   # One directory per case: input.js + expected.js
 ```
 
 ## Adding a new codemod
@@ -32,7 +31,7 @@ codemods/<codemod-name>/
 1. Create a new directory under `codemods/` with the structure above. Use a short, kebab-case name that describes the migration (see [AGENTS.md](AGENTS.md) for file templates).
 2. Update `codemod.yaml`, `workflow.yaml`, `package.json`, and `README.md` with the new name and description. The package name must be scoped as `@webpack/<codemod-name>`.
 3. Write the transform in `src/workflow.ts`. See the [jssg documentation](https://docs.codemod.com/jssg) and the [ast-grep rule reference](https://ast-grep.github.io/reference/rule.html).
-4. Add fixtures: every file in `tests/input/` must have a matching file in `tests/expected/`.
+4. Add fixtures: one directory per case under `tests/`, each with an `input.<ext>` and an `expected.<ext>` file.
 5. Add the codemod to the table in the root [README.md](README.md).
 
 ## Testing
