@@ -100,6 +100,11 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
   // dev/prod ternary where both branches are replaceable.
   const isRemovableUseElement = (node: SgNode<Js>): boolean => {
     if (isPluginLoaderExpression(node)) return true;
+    // CRA-style guard: `isEnvDevelopment && "style-loader"` inside `[...].filter(Boolean)`.
+    if (node.kind() === "binary_expression" && node.field("operator")?.text() === "&&") {
+      const right = node.field("right");
+      return right !== null && isRemovableUseElement(right);
+    }
     if (node.kind() === "ternary_expression") {
       const consequence = node.field("consequence");
       const alternative = node.field("alternative");
@@ -116,6 +121,15 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
     }
     const name = loaderNameOf(node);
     return name !== null && REMOVABLE_LOADERS.has(name);
+  };
+
+  // `[ ... ].filter(Boolean)` — return the inner array literal.
+  const unwrapFilterCall = (node: SgNode<Js>): SgNode<Js> => {
+    if (node.kind() !== "call_expression") return node;
+    const callee = node.field("function");
+    if (!callee || callee.kind() !== "member_expression") return node;
+    const receiver = callee.field("object");
+    return receiver && receiver.kind() === "array" ? receiver : node;
   };
 
   // Whether the rule still claims plain `.css` resources after the transform —
@@ -257,8 +271,9 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
 
   for (const pair of rootNode.findAll({ rule: { kind: "pair" } })) {
     if (keyName(pair) !== "use") continue;
-    const value = pair.field("value");
+    let value = pair.field("value");
     if (!value) continue;
+    value = unwrapFilterCall(value);
     const elements = value.kind() === "array" ? namedChildren(value) : [value];
     if (!elements.length) continue;
     const removable = elements.filter(isRemovableUseElement);
@@ -317,10 +332,17 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
       if (swap.keptLoaders.length) {
         // Preprocessor loaders stay in `use`; native CSS parses their output.
         const keptTexts = swap.keptLoaders.map((loader) => loader.text());
+        const keepsGuard = swap.keptLoaders.some(
+          (loader) =>
+            loader.kind() === "binary_expression" || loader.kind() === "ternary_expression",
+        );
+        const filterSuffix = keepsGuard ? ".filter(Boolean)" : "";
         const indent = lineIndent(source, swap.pair.range().start.index);
         const separator = swap.ruleObject.text().includes("\n") ? `,\n${indent}` : ", ";
         edits.push(
-          swap.pair.replace(`use: [${keptTexts.join(", ")}]${separator}type: "css/auto"`),
+          swap.pair.replace(
+            `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}type: "css/auto"`,
+          ),
         );
       } else {
         edits.push(swap.pair.replace('type: "css/auto"'));
@@ -354,14 +376,7 @@ async function transform(root: SgRoot<Js>): Promise<string | null> {
   for (const pair of rootNode.findAll({ rule: { kind: "pair" } })) {
     if (keyName(pair) !== "plugins") continue;
     let value = pair.field("value");
-    // `plugins: [ ... ].filter(Boolean)` — operate on the inner array literal.
-    if (value && value.kind() === "call_expression") {
-      const callee = value.field("function");
-      if (callee && callee.kind() === "member_expression") {
-        const receiver = callee.field("object");
-        if (receiver && receiver.kind() === "array") value = receiver;
-      }
-    }
+    if (value) value = unwrapFilterCall(value);
     if (!value || value.kind() !== "array") continue;
     const elements = namedChildren(value);
     const removed = elements.filter((element) => pluginInstantiationOf(element) !== null);
