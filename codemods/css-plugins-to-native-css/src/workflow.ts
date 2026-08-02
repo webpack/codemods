@@ -25,6 +25,10 @@ const PLUGIN_OPTION_TO_OUTPUT = new Map([
   ["chunkFilename", "cssChunkFilename"],
 ]);
 const CSS_SAMPLE_FILES = ["/file.css", "/file.module.css"];
+// css-loader options that describe the loader chain or things native CSS
+// handles on its own; every other option (url, import, exportType, …) changes
+// parsing/export semantics that native CSS cannot replicate.
+const DROPPABLE_CSS_LOADER_OPTIONS = new Set(["importLoaders", "sourceMap", "esModule"]);
 
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
@@ -122,25 +126,34 @@ class CssMigration {
     return name !== null && REMOVABLE_LOADERS.has(name);
   }
 
-  // A `use` entry configuring css-loader's `modules` option (any value —
-  // `false` differs from the `css/auto` naming convention too).
-  private hasCssModulesOption(node: SgNode<Js>): boolean {
+  // css-loader options that native CSS cannot replicate block the rule's
+  // migration: any key outside the droppable set (url, import, exportType, …),
+  // and `modules` when the rule also matches plain `.css` files — that option
+  // applies to every matched file, while `css/auto` only treats `*.module.*`
+  // names as CSS modules. An unreadable options value blocks too, to be safe.
+  private cssLoaderBlocksMigration(node: SgNode<Js>, ruleObject: SgNode<Js>): boolean {
     if (node.kind() === "binary_expression") {
       const right = node.field("right");
-      return right !== null && this.hasCssModulesOption(right);
+      return right !== null && this.cssLoaderBlocksMigration(right, ruleObject);
     }
     if (node.kind() === "ternary_expression") {
       const consequence = node.field("consequence");
       const alternative = node.field("alternative");
       return (
-        (consequence !== null && this.hasCssModulesOption(consequence)) ||
-        (alternative !== null && this.hasCssModulesOption(alternative))
+        (consequence !== null && this.cssLoaderBlocksMigration(consequence, ruleObject)) ||
+        (alternative !== null && this.cssLoaderBlocksMigration(alternative, ruleObject))
       );
     }
     if (node.kind() !== "object" || loaderNameOf(node) !== "css-loader") return false;
-    const optionsValue = findPair(node, "options")?.field("value");
-    if (!optionsValue || optionsValue.kind() !== "object") return false;
-    return findPair(optionsValue, "modules") !== undefined;
+    const optionsPair = findPair(node, "options");
+    if (!optionsPair) return false;
+    const optionsValue = optionsPair.field("value");
+    if (!optionsValue || optionsValue.kind() !== "object") return true;
+    return pairsOf(optionsValue).some((optionPair) => {
+      const name = keyName(optionPair);
+      if (name === "modules") return ruleMatchesFiles(ruleObject, ["/file.css"]);
+      return name === null || !DROPPABLE_CSS_LOADER_OPTIONS.has(name);
+    });
   }
 
   // The `new MiniCssExtractPlugin(...)` behind a plugins element, unwrapping
@@ -199,13 +212,7 @@ class CssMigration {
       if (!removable.length) continue;
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
-      // css-loader's `modules` option applies to every matched file, while
-      // `css/auto` only treats `*.module.*` names as CSS modules — migrating a
-      // rule that also matches plain `.css` would silently change semantics.
-      if (
-        elements.some((element) => this.hasCssModulesOption(element)) &&
-        ruleMatchesFiles(ruleObject, ["/file.css"])
-      ) {
+      if (elements.some((element) => this.cssLoaderBlocksMigration(element, ruleObject))) {
         continue;
       }
       const arrayNode = ruleObject.parent();
