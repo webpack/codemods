@@ -77,6 +77,8 @@ interface UseSwap {
   trivial: boolean;
   sourceMapOff: boolean;
   plan: ConfigPlan | null;
+  // Rule-level `options:` sibling of a `loader:` shorthand, removed on swap.
+  optionsPair: SgNode<Js> | null;
 }
 
 interface RulesArrayWork {
@@ -111,13 +113,15 @@ class CssMigration {
 
   run(): string | null {
     const usePairs: SgNode<Js>[] = [];
+    const loaderPairs: SgNode<Js>[] = [];
     const pluginsPairs: SgNode<Js>[] = [];
     for (const pair of this.editor.rootNode.findAll({ rule: { kind: "pair" } })) {
       const name = keyName(pair);
       if (name === "use") usePairs.push(pair);
+      else if (name === "loader") loaderPairs.push(pair);
       else if (name === "plugins") pluginsPairs.push(pair);
     }
-    this.transformRules(usePairs);
+    this.transformRules(usePairs, loaderPairs);
     this.transformPlugins(pluginsPairs);
     this.migrateCompilationHooks();
     this.planConfigInsertions();
@@ -358,8 +362,8 @@ class CssMigration {
   // over); surviving rules get `type: "css/auto"`. Survival is decided after
   // every rule was collected, so config-wide facts (mixed sourceMap settings)
   // can pull a rule back in to carry its comment.
-  private transformRules(usePairs: SgNode<Js>[]): void {
-    const rulesWork = this.collectRulesWork(usePairs);
+  private transformRules(usePairs: SgNode<Js>[], loaderPairs: SgNode<Js>[]): void {
+    const rulesWork = this.collectRulesWork(usePairs, loaderPairs);
     for (const work of rulesWork.values()) {
       const removed: SgNode<Js>[] = [];
       const swaps: UseSwap[] = [];
@@ -403,7 +407,10 @@ class CssMigration {
     return plan.sourceMapOffRules > 0 && plan.sourceMapOffRules < plan.cssLoaderRules;
   }
 
-  private collectRulesWork(usePairs: SgNode<Js>[]): Map<number, RulesArrayWork> {
+  private collectRulesWork(
+    usePairs: SgNode<Js>[],
+    loaderPairs: SgNode<Js>[],
+  ): Map<number, RulesArrayWork> {
     const rulesWork = new Map<number, RulesArrayWork>();
     for (const pair of usePairs) {
       const originalValue = pair.field("value");
@@ -461,9 +468,69 @@ class CssMigration {
         trivial,
         sourceMapOff: findings.cssSourceMapOff,
         plan,
+        optionsPair: null,
       });
     }
+    this.collectLoaderShorthandWork(loaderPairs, rulesWork);
     return rulesWork;
+  }
+
+  // Rule-level `loader:`/`options:` shorthand — the rule object itself has the
+  // `{ loader, options }` shape the option findings already understand.
+  private collectLoaderShorthandWork(
+    loaderPairs: SgNode<Js>[],
+    rulesWork: Map<number, RulesArrayWork>,
+  ): void {
+    for (const pair of loaderPairs) {
+      const ruleObject = pair.parent();
+      if (!ruleObject || ruleObject.kind() !== "object") continue;
+      if (!findPair(ruleObject, "test") || findPair(ruleObject, "use")) continue;
+      const value = pair.field("value");
+      if (!value || !this.isRemovableUseElement(value)) continue;
+      const arrayNode = ruleObject.parent();
+      if (!arrayNode || arrayNode.kind() !== "array") continue;
+      if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
+      const findings: OptionFindings = {
+        lost: [],
+        generatorProps: [],
+        parserProps: [],
+        cssSourceMapOff: false,
+        cssPublicPath: null,
+      };
+      this.collectLoaderOptionFindings(ruleObject, ruleObject, findings);
+      const config = findConfigObjectFor(pair);
+      const plan = config ? this.planFor(config) : null;
+      if (plan && this.ruleUsesCssLoader([ruleObject])) {
+        plan.cssLoaderRules += 1;
+        if (findings.cssSourceMapOff) plan.sourceMapOffRules += 1;
+      } else if (findings.cssSourceMapOff) {
+        findings.lost.push("css-loader.sourceMap");
+      }
+      const key = arrayNode.range().start.index;
+      let work = rulesWork.get(key);
+      if (!work) {
+        work = { arrayNode, entries: [] };
+        rulesWork.set(key, work);
+      }
+      const trivial = pairsOf(ruleObject).every((rulePair) => {
+        const name = keyName(rulePair);
+        return name === "test" || name === "loader" || name === "options";
+      });
+      work.entries.push({
+        pair,
+        ruleObject,
+        keptLoaders: [],
+        filterSuffix: "",
+        lostOptions: [...new Set(findings.lost)],
+        generatorProps: dedupeProps(findings.generatorProps),
+        parserProps: dedupeProps(findings.parserProps),
+        cssPublicPath: findings.cssPublicPath,
+        trivial,
+        sourceMapOff: findings.cssSourceMapOff,
+        plan,
+        optionsPair: findPair(ruleObject, "options") ?? null,
+      });
+    }
   }
 
   private ruleUsesCssLoader(elements: SgNode<Js>[]): boolean {
@@ -526,6 +593,7 @@ class CssMigration {
       replacement += `${separator}${key}: { ${texts.join(", ")} }`;
     }
     this.editor.replace(swap.pair, replacement);
+    if (swap.optionsPair) this.editor.markForRemoval(swap.optionsPair);
     if (swap.cssPublicPath !== null) {
       // Assets referenced from this rule's files keep their custom base URL —
       // unless a rule for that issuer is already declared.
