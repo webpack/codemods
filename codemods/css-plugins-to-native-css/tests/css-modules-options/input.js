@@ -10,7 +10,9 @@ module.exports = {
             options: {
               sourceMap: true,
               modules: {
+                auto: true,
                 localIdentName: "[name]__[local]___[hash:base64:5]",
+                localIdentHashSalt: "app-styles",
                 exportOnlyLocals: false,
                 namedExport: true,
                 exportLocalsConvention: "camelCase",

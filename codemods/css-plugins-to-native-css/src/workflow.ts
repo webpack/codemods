@@ -260,9 +260,15 @@ class CssMigration {
       }
       switch (subName) {
         case "auto":
+          // Only `auto: true` matches the native `*.module.*` convention.
+          if (subValue.kind() !== "true") findings.lost.push("css-loader.modules.auto");
           break;
         case "localIdentName":
-          findings.generatorProps.push({ name: "localIdentName", valueText: subValue.text() });
+        case "localIdentHashSalt":
+        case "localIdentHashFunction":
+        case "localIdentHashDigest":
+        case "localIdentHashDigestLength":
+          findings.generatorProps.push({ name: subName, valueText: subValue.text() });
           break;
         case "exportOnlyLocals":
           findings.generatorProps.push({ name: "exportsOnly", valueText: subValue.text() });
