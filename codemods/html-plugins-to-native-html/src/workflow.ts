@@ -67,10 +67,17 @@ const HOOK_REVIEW_COMMENTS = new Map([
 // Stages webpack handles itself — a tap on them cannot be carried over, so
 // files using them are left untouched.
 const UNMAPPABLE_HOOKS = new Set(["beforeAssetTagGeneration", "afterTemplateExecution"]);
+// Handled by the per-entry migration itself rather than the option mapping.
+const MULTI_PAGE_SKIPPED_OPTIONS = new Set(["chunks", "filename"]);
 
 interface HtmlProp {
   name: string;
   valueText: string;
+}
+
+function dedupeProps(props: HtmlProp[]): HtmlProp[] {
+  const seen = new Set<string>();
+  return props.filter((prop) => !seen.has(prop.name) && seen.add(prop.name));
 }
 
 // Everything one plugin instance contributes to its enclosing config.
@@ -94,9 +101,17 @@ interface LoaderFindings {
 interface ConfigPlan {
   config: SgNode<Js>;
   commentLines: string[];
+  // Emit a global `output.html` (single-page mode; per-entry pages skip it).
+  htmlEnabled: boolean;
+  // Props composing the `output.html` object (plugin options, sibling plugins).
+  htmlProps: HtmlProp[];
+  htmlFilename: string | null;
+  // Other output-level props (e.g. `module` for ESM script loading).
   outputProps: HtmlProp[];
-  needsExperimentsHtml: boolean;
+  experimentsProps: HtmlProp[];
   pendingEntry: { text: string; comment: string } | null;
+  // A html-webpack-plugin instance in this config was migrated.
+  pluginMigratedHere: boolean;
 }
 
 // Insert the script tag before `</head>` (or `</body>`), matching the
@@ -199,9 +214,13 @@ class HtmlMigration {
       plan = {
         config,
         commentLines: [],
+        htmlEnabled: false,
+        htmlProps: [],
+        htmlFilename: null,
         outputProps: [],
-        needsExperimentsHtml: false,
+        experimentsProps: [],
         pendingEntry: null,
+        pluginMigratedHere: false,
       };
       this.configPlans.set(key, plan);
     }
@@ -211,6 +230,12 @@ class HtmlMigration {
   private describeLost(name: string): string {
     const hint = LOST_OPTION_HINTS.get(name);
     return hint ? `${name} (${hint})` : name;
+  }
+
+  private requireExperimentsHtml(plan: ConfigPlan): void {
+    if (!plan.experimentsProps.some((prop) => prop.name === "html")) {
+      plan.experimentsProps.push({ name: "html", valueText: "true" });
+    }
   }
 
   // ---------- module.rules (html-loader) ----------
@@ -375,7 +400,7 @@ class HtmlMigration {
     // A surviving rule that matches `.html` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, HTML_SAMPLE_FILES)) return;
     const config = findConfigObjectFor(swap.pair);
-    if (config) this.planFor(config).needsExperimentsHtml = true;
+    if (config) this.requireExperimentsHtml(this.planFor(config));
   }
 
   // ---------- plugins ----------
@@ -406,26 +431,119 @@ class HtmlMigration {
       const instantiation = this.pluginInstantiationOf(element);
       if (instantiation) instances.push({ element, instantiation });
     }
-    // Several instances mean several pages (`chunks` per page) — per-entry
-    // `html` descriptors cover it, but mapping them safely needs a human.
-    if (instances.length !== 1) {
-      if (instances.length) this.pluginRetained = true;
+    if (!instances.length) return;
+    // Every options argument must be an object literal to be understood.
+    const optionObjects: (SgNode<Js> | undefined)[] = [];
+    for (const { instantiation } of instances) {
+      const argumentsNode = instantiation.field("arguments");
+      const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
+      if (optionsObject && optionsObject.kind() !== "object") {
+        this.pluginRetained = true;
+        return;
+      }
+      optionObjects.push(optionsObject);
+    }
+    // Several instances (or a `chunks` list) mean per-entry pages instead of
+    // the global `output.html`.
+    const firstOptions = optionObjects[0];
+    const chunkRestricted =
+      instances.length > 1 ||
+      (firstOptions !== undefined &&
+        findPair(firstOptions, "chunks")?.field("value")?.kind() === "array");
+    if (chunkRestricted) {
+      this.migrateMultiPage(configObject, pluginsPair, elements, instances, optionObjects);
       return;
     }
-    const { element, instantiation } = instances[0];
-    const argumentsNode = instantiation.field("arguments");
-    const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
-    // A non-literal options argument (variable, spread) can't be understood.
-    if (optionsObject && optionsObject.kind() !== "object") {
-      this.pluginRetained = true;
-      return;
-    }
-    const findings = this.collectFindings(optionsObject);
-    if (elements.length === 1) this.editor.markForRemoval(pluginsPair);
-    else this.editor.markForRemoval(element);
+    const findings = this.collectFindings(firstOptions);
+    this.removeInstances(pluginsPair, elements, [instances[0].element]);
     if (findings.templateValue !== null) this.migrateEntry(configObject, findings);
     else this.noteMultiPageEntry(configObject, findings);
     this.mergeIntoPlan(configObject, findings);
+    this.pluginMigrated = true;
+  }
+
+  private removeInstances(
+    pluginsPair: SgNode<Js>,
+    elements: SgNode<Js>[],
+    removedElements: SgNode<Js>[],
+  ): void {
+    if (removedElements.length === elements.length) {
+      this.editor.markForRemoval(pluginsPair);
+    } else {
+      for (const element of removedElements) this.editor.markForRemoval(element);
+    }
+  }
+
+  // One instance per page (`chunks: ["name"]`) maps to the entry descriptor
+  // `html` option; entries no instance claims get no page, so the global
+  // `output.html` stays off. Anything the shape can't express bails out.
+  private migrateMultiPage(
+    configObject: SgNode<Js>,
+    pluginsPair: SgNode<Js>,
+    elements: SgNode<Js>[],
+    instances: { element: SgNode<Js>; instantiation: SgNode<Js> }[],
+    optionObjects: (SgNode<Js> | undefined)[],
+  ): void {
+    const entryValue = findPair(configObject, "entry")?.field("value");
+    if (!entryValue || entryValue.kind() !== "object") {
+      this.pluginRetained = true;
+      return;
+    }
+    const pages: { entryDescriptor: SgNode<Js>; htmlValue: string }[] = [];
+    const lost: string[] = [];
+    for (const options of optionObjects) {
+      // Each page needs exactly one owning entry in `chunks`.
+      const chunksValue = options ? findPair(options, "chunks")?.field("value") : undefined;
+      const chunkNames = chunksValue?.kind() === "array" ? namedChildren(chunksValue) : [];
+      if (!options || chunkNames.length !== 1 || chunkNames[0].kind() !== "string") {
+        this.pluginRetained = true;
+        return;
+      }
+      const chunkName = unquote(chunkNames[0].text());
+      const entryDescriptor = findPair(entryValue, chunkName)?.field("value");
+      if (!entryDescriptor) {
+        this.pluginRetained = true;
+        return;
+      }
+      if (findPair(options, "template") || findPair(options, "templateContent")) {
+        this.pluginRetained = true;
+        return;
+      }
+      const findings = this.collectFindings(options, MULTI_PAGE_SKIPPED_OPTIONS);
+      // The page filename must fit the shared `htmlFilename: "[name].html"`.
+      const filenameValue = findPair(options, "filename")?.field("value");
+      if (filenameValue) {
+        const filename = filenameValue.kind() === "string" ? unquote(filenameValue.text()) : null;
+        if (filename !== `${chunkName}.html` && filename !== "[name].html") {
+          lost.push(`filename "${filename ?? "?"}" (output.htmlFilename is "[name].html")`);
+        }
+      }
+      lost.push(...findings.lost);
+      const htmlValue = findings.htmlProps.length
+        ? `{ ${findings.htmlProps.map((prop) => `${prop.name}: ${prop.valueText}`).join(", ")} }`
+        : "true";
+      pages.push({ entryDescriptor, htmlValue });
+    }
+    this.removeInstances(pluginsPair, elements, instances.map((instance) => instance.element));
+    for (const page of pages) {
+      const node = page.entryDescriptor;
+      if (node.kind() === "object") {
+        if (!findPair(node, "html")) {
+          this.editor.insertIntoObject(node, () => [`html: ${page.htmlValue}`]);
+        }
+      } else {
+        this.editor.replace(node, `{ import: ${node.text()}, html: ${page.htmlValue} }`);
+      }
+    }
+    const plan = this.planFor(configObject);
+    plan.pluginMigratedHere = true;
+    this.requireExperimentsHtml(plan);
+    plan.htmlFilename ??= '"[name].html"';
+    if (lost.length) {
+      plan.commentLines.push(
+        `Removed html-webpack-plugin options without a native HTML equivalent: ${[...new Set(lost)].join(", ")}`,
+      );
+    }
     this.pluginMigrated = true;
   }
 
@@ -516,7 +634,10 @@ class HtmlMigration {
 
   // ---------- option mapping ----------
 
-  private collectFindings(optionsObject: SgNode<Js> | undefined): InstanceFindings {
+  private collectFindings(
+    optionsObject: SgNode<Js> | undefined,
+    skippedOptions?: Set<string>,
+  ): InstanceFindings {
     const findings: InstanceFindings = {
       htmlProps: [],
       htmlFilename: null,
@@ -540,6 +661,7 @@ class HtmlMigration {
         continue;
       }
       if (name === "template" || DROPPABLE_OPTIONS.has(name)) continue;
+      if (skippedOptions && skippedOptions.has(name)) continue;
       this.collectOption(name, optionValue, templateMode, findings);
     }
     return findings;
@@ -728,21 +850,18 @@ class HtmlMigration {
 
   private mergeIntoPlan(configObject: SgNode<Js>, findings: InstanceFindings): void {
     const plan = this.planFor(configObject);
-    plan.needsExperimentsHtml = true;
+    plan.pluginMigratedHere = true;
+    this.requireExperimentsHtml(plan);
     if (findings.lost.length) {
       plan.commentLines.push(
         `Removed html-webpack-plugin options without a native HTML equivalent: ${[...new Set(findings.lost)].join(", ")}`,
       );
     }
     plan.commentLines.push(...findings.notes);
-    if (findings.templateValue === null) {
-      const htmlValue = findings.htmlProps.length
-        ? `{ ${findings.htmlProps.map((prop) => `${prop.name}: ${prop.valueText}`).join(", ")} }`
-        : "true";
-      plan.outputProps.push({ name: "html", valueText: htmlValue });
-    }
+    if (findings.templateValue === null) plan.htmlEnabled = true;
+    plan.htmlProps.push(...findings.htmlProps);
     // The plugin emitted `index.html` by default; native defaults to `[name].html`.
-    plan.outputProps.push({ name: "htmlFilename", valueText: findings.htmlFilename ?? '"index.html"' });
+    plan.htmlFilename ??= findings.htmlFilename ?? '"index.html"';
     plan.pendingEntry = findings.pendingEntry;
   }
 
@@ -755,15 +874,29 @@ class HtmlMigration {
           (indent) => `// ${pendingEntry.comment}\n${indent}entry: ${pendingEntry.text}`,
         );
       }
-      if (plan.outputProps.length) {
-        this.planObjectProps(plan.config, "output", plan.outputProps, plan.commentLines, topProperties);
+      const outputProps: HtmlProp[] = [];
+      const htmlProps = dedupeProps(plan.htmlProps);
+      if (plan.htmlEnabled || htmlProps.length) {
+        outputProps.push({
+          name: "html",
+          valueText: htmlProps.length
+            ? `{ ${htmlProps.map((prop) => `${prop.name}: ${prop.valueText}`).join(", ")} }`
+            : "true",
+        });
       }
-      if (plan.needsExperimentsHtml) {
+      if (plan.htmlFilename !== null) {
+        outputProps.push({ name: "htmlFilename", valueText: plan.htmlFilename });
+      }
+      outputProps.push(...plan.outputProps);
+      if (outputProps.length) {
+        this.planObjectProps(plan.config, "output", outputProps, plan.commentLines, topProperties);
+      }
+      if (plan.experimentsProps.length) {
         this.planObjectProps(
           plan.config,
           "experiments",
-          [{ name: "html", valueText: "true" }],
-          plan.outputProps.length ? [] : plan.commentLines,
+          plan.experimentsProps,
+          outputProps.length ? [] : plan.commentLines,
           topProperties,
         );
       }
