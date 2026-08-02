@@ -63,6 +63,8 @@ interface OptionFindings {
   parserProps: RuleProp[];
   cssSourceMapOff: boolean;
   cssPublicPath: string | null;
+  // Module type overriding the default `css/auto` (e.g. `css/global`).
+  cssType: string | null;
 }
 
 interface UseSwap {
@@ -74,6 +76,7 @@ interface UseSwap {
   generatorProps: RuleProp[];
   parserProps: RuleProp[];
   cssPublicPath: string | null;
+  cssType: string | null;
   trivial: boolean;
   sourceMapOff: boolean;
   plan: ConfigPlan | null;
@@ -218,6 +221,15 @@ class CssMigration {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
       if (name !== null && droppable.has(name)) continue;
+      if (loaderName === EXTRACT_LOADER_NAME && name === "emit" && value) {
+        // `emit: false` (SSR) maps to the native exports-only generator.
+        if (value.kind() === "false") {
+          findings.generatorProps.push({ name: "exportsOnly", valueText: "true" });
+        } else if (value.kind() !== "true") {
+          findings.lost.push(`${EXTRACT_LOADER_NAME}.emit`);
+        }
+        continue;
+      }
       if (loaderName === EXTRACT_LOADER_NAME && name === "publicPath" && value) {
         // A genuinely different base URL becomes an issuer-scoped asset rule;
         // non-literal values can't be carried over safely.
@@ -239,6 +251,15 @@ class CssMigration {
         // becomes a per-type `devtool` entry on the enclosing config.
         if (value.kind() === "false") findings.cssSourceMapOff = true;
         else if (value.kind() !== "true") findings.lost.push(`${loaderName}.sourceMap`);
+      } else if (name === "exportType") {
+        // "array" only described the loader-chain format that is now gone.
+        const exportType = value.kind() === "string" ? unquote(value.text()) : null;
+        if (exportType === "css-style-sheet" || exportType === "string") {
+          const mapped = exportType === "string" ? "text" : exportType;
+          findings.parserProps.push({ name: "exportType", valueText: `"${mapped}"` });
+        } else if (exportType !== "array") {
+          findings.lost.push(`${loaderName}.exportType`);
+        }
       } else if (name === "url" || name === "import") {
         // Booleans map to the rule's parser; filter functions have no equivalent.
         if (value.kind() === "true" || value.kind() === "false") {
@@ -284,6 +305,15 @@ class CssMigration {
           // Only `auto: true` matches the native `*.module.*` convention.
           if (subValue.kind() !== "true") findings.lost.push("css-loader.modules.auto");
           break;
+        case "mode": {
+          // "local" is what `css/auto` already does for these rules; "global"
+          // and "pure" have dedicated native forms; functions do not.
+          const mode = subValue.kind() === "string" ? unquote(subValue.text()) : null;
+          if (mode === "global") findings.cssType = "css/global";
+          else if (mode === "pure") findings.parserProps.push({ name: "pure", valueText: "true" });
+          else if (mode !== "local") findings.lost.push("css-loader.modules.mode");
+          break;
+        }
         case "localIdentName":
         case "localIdentHashSalt":
         case "localIdentHashFunction":
@@ -378,7 +408,8 @@ class CssMigration {
           entry.lostOptions.length > 0 ||
           entry.generatorProps.length > 0 ||
           entry.parserProps.length > 0 ||
-          entry.cssPublicPath !== null;
+          entry.cssPublicPath !== null ||
+          entry.cssType !== null;
         if (survives) swaps.push(entry);
         else removed.push(entry.ruleObject);
       }
@@ -434,6 +465,7 @@ class CssMigration {
         parserProps: [],
         cssSourceMapOff: false,
         cssPublicPath: null,
+        cssType: null,
       };
       for (const element of elements) {
         this.collectLoaderOptionFindings(element, ruleObject, findings);
@@ -465,6 +497,7 @@ class CssMigration {
         generatorProps: dedupeProps(findings.generatorProps),
         parserProps: dedupeProps(findings.parserProps),
         cssPublicPath: findings.cssPublicPath,
+        cssType: findings.cssType,
         trivial,
         sourceMapOff: findings.cssSourceMapOff,
         plan,
@@ -496,6 +529,7 @@ class CssMigration {
         parserProps: [],
         cssSourceMapOff: false,
         cssPublicPath: null,
+        cssType: null,
       };
       this.collectLoaderOptionFindings(ruleObject, ruleObject, findings);
       const config = findConfigObjectFor(pair);
@@ -525,6 +559,7 @@ class CssMigration {
         generatorProps: dedupeProps(findings.generatorProps),
         parserProps: dedupeProps(findings.parserProps),
         cssPublicPath: findings.cssPublicPath,
+        cssType: findings.cssType,
         trivial,
         sourceMapOff: findings.cssSourceMapOff,
         plan,
@@ -583,7 +618,7 @@ class CssMigration {
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
       replacement += `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}`;
     }
-    replacement += 'type: "css/auto"';
+    replacement += `type: "${swap.cssType ?? "css/auto"}"`;
     for (const [key, props] of [
       ["generator", swap.generatorProps],
       ["parser", swap.parserProps],
