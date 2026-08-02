@@ -308,6 +308,14 @@ class CssMigration {
     }
   }
 
+  private hasIssuerRule(arrayNode: SgNode<Js> | null, issuerText: string): boolean {
+    if (!arrayNode || arrayNode.kind() !== "array") return false;
+    return namedChildren(arrayNode).some((element) => {
+      if (element.kind() !== "object") return false;
+      return findPair(element, "issuer")?.field("value")?.text() === issuerText;
+    });
+  }
+
   // The loader `publicPath` is redundant when it is the extraction-relative
   // workaround ("./", "../") native CSS does not need, or when it just repeats
   // the config's own `output.publicPath`.
@@ -494,14 +502,17 @@ class CssMigration {
     }
     this.editor.replace(swap.pair, replacement);
     if (swap.cssPublicPath !== null) {
-      // Assets referenced from this rule's files keep their custom base URL.
+      // Assets referenced from this rule's files keep their custom base URL —
+      // unless a rule for that issuer is already declared.
       const issuer = findPair(swap.ruleObject, "test")?.field("value")?.text() ?? "/\\.css$/";
-      const ruleIndent = lineIndent(this.editor.source, swap.ruleObject.range().start.index);
-      const sibling = `{ issuer: ${issuer}, generator: { publicPath: ${swap.cssPublicPath} } }`;
-      this.editor.insertAfter(
-        swap.ruleObject,
-        multiline ? `,\n${ruleIndent}${sibling}` : `, ${sibling}`,
-      );
+      if (!this.hasIssuerRule(swap.ruleObject.parent(), issuer)) {
+        const ruleIndent = lineIndent(this.editor.source, swap.ruleObject.range().start.index);
+        const sibling = `{ issuer: ${issuer}, generator: { publicPath: ${swap.cssPublicPath} } }`;
+        this.editor.insertAfter(
+          swap.ruleObject,
+          multiline ? `,\n${ruleIndent}${sibling}` : `, ${sibling}`,
+        );
+      }
     }
     // A surviving rule that matches `.css` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, CSS_SAMPLE_FILES)) return;
