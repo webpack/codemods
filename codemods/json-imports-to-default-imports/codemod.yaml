@@ -1,0 +1,20 @@
+schema_version: "1.0"
+name: "@webpack/json-imports-to-default-imports"
+version: 1.0.0
+description: Transform JSON named imports to default imports
+author: akash-kumar-dev
+license: MIT
+workflow: workflow.yaml
+category: migration
+
+targets:
+  languages:
+    - javascript
+    - typescript
+
+keywords:
+  - webpack
+
+registry:
+  access: public
+  visibility: public
