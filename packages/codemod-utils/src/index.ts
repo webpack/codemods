@@ -9,7 +9,6 @@ import {
   lineIndent,
   namedChildren,
   rangeOf,
-  unquote,
 } from "./ast";
 import type { ModuleBinding } from "./imports";
 
@@ -21,10 +20,12 @@ export * from "./imports";
 // Loader name behind a `use` entry: a plain string, `require.resolve("...")`,
 // `import.meta.resolve("...")`, or `{ loader: <one of those> }`.
 export function loaderNameOf(node: SgNode<Js>): string | null {
-  if (node.kind() === "string") return unquote(node.text());
-  if (node.kind() === "call_expression") {
+  if (node.is("string")) {
+    return node.find({ rule: { kind:"string_fragment"  } })?.text() ?? null;
+  }
+  if (node.is("call_expression")) {
     const callee = node.field("function");
-    const receiver = callee?.kind() === "member_expression" ? callee.field("object")?.text() : null;
+    const receiver = callee?.is("member_expression") ? callee.field("object")?.text() : null;
     if (
       !callee ||
       (receiver !== "require" && receiver !== "import.meta") ||
@@ -34,9 +35,13 @@ export function loaderNameOf(node: SgNode<Js>): string | null {
     }
     const argumentsNode = node.field("arguments");
     const args = argumentsNode ? namedChildren(argumentsNode) : [];
-    return args.length === 1 && args[0].kind() === "string" ? unquote(args[0].text()) : null;
+
+    if (args.length !== 1 || !args[0].is("string")) return null;
+
+    const stringFragment = args[0].find({ rule: { kind:"string_fragment"  } });
+    return stringFragment ? stringFragment.text() : null;
   }
-  if (node.kind() !== "object") return null;
+  if (!node.is("object")) return null;
   const loaderValue = findPair(node, "loader")?.field("value");
   return loaderValue ? loaderNameOf(loaderValue) : null;
 }
@@ -47,7 +52,7 @@ export function loaderNameOf(node: SgNode<Js>): string | null {
 export function ruleMatchesFiles(ruleObject: SgNode<Js>, sampleFiles: string[]): boolean {
   const testValue = findPair(ruleObject, "test")?.field("value");
   if (!testValue) return true;
-  if (testValue.kind() !== "regex") return true;
+  if (!testValue.is("regex")) return true;
   const pattern = testValue.field("pattern");
   if (!pattern) return true;
   try {
@@ -62,9 +67,9 @@ export function ruleMatchesFiles(ruleObject: SgNode<Js>, sampleFiles: string[]):
 export function findConfigObjectFor(node: SgNode<Js>): SgNode<Js> | null {
   let current = node.parent();
   while (current) {
-    if (current.kind() === "pair" && keyName(current) === "module") {
+    if (current.is("pair") && keyName(current) === "module") {
       const parent = current.parent();
-      if (parent && parent.kind() === "object") return parent;
+      if (parent && parent.is("object")) return parent;
     }
     current = current.parent();
   }
@@ -174,7 +179,7 @@ export class ConfigEditor {
     const objectIndent = lineIndent(this.source, objectNode.range().start.index);
     const indentUnit = indent.slice(objectIndent.length) || (indent.includes("\t") ? "\t" : "  ");
     const built = buildProperties(indent, indentUnit);
-    const hasSpread = properties.some((property) => property.kind() === "spread_element");
+    const hasSpread = properties.some((property) => property.is("spread_element"));
     let insertAt: number;
     let insertedText: string;
     if (hasSpread) {
@@ -241,7 +246,7 @@ export class ConfigEditor {
         end: parent.range().end.index - 1,
       });
     } else {
-      this.edits.push(parent.replace(parent.kind() === "array" ? "[]" : "{}"));
+      this.edits.push(parent.replace(parent.is("array") ? "[]" : "{}"));
       this.editedRanges.push(rangeOf(parent));
     }
   }

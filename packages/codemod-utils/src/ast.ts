@@ -11,21 +11,29 @@ export function rangeOf(node: SgNode<Js>): Range {
   return { start: range.start.index, end: range.end.index };
 }
 
-export function unquote(text: string): string {
-  return text.replace(/^["'`]/, "").replace(/["'`]$/, "");
-}
-
 export function namedChildren(node: SgNode<Js>): SgNode<Js>[] {
   return node.children().filter((child) => child.isNamed());
 }
 
 export function keyName(pair: SgNode<Js>): string | null {
   const key = pair.field("key");
-  return key ? unquote(key.text()) : null;
+
+  if (!key) return null;
+
+  const text = key.text();
+  if (!text) return null;
+
+  const first = text[0];
+  const last = text[text.length - 1];
+  if (text.length >= 2 && first === last && (first === '"' || first === "'" || first === "`")) {
+    return text.slice(1, -1);
+  }
+
+  return text;
 }
 
 export function pairsOf(objectNode: SgNode<Js>): SgNode<Js>[] {
-  return namedChildren(objectNode).filter((child) => child.kind() === "pair");
+  return namedChildren(objectNode).filter((child) => child.is("pair"));
 }
 
 export function findPair(objectNode: SgNode<Js>, name: string): SgNode<Js> | undefined {
@@ -46,13 +54,13 @@ export function isInsideAny(range: Range, ranges: Range[]): boolean {
 // Effective branches behind a dev/prod guard (`cond && x`, `cond ? a : b`),
 // or null when the node is not a guard.
 export function guardBranchesOf(node: SgNode<Js>): SgNode<Js>[] | null {
-  if (node.kind() === "binary_expression" && node.field("operator")?.text() === "&&") {
+  if (node.is("binary_expression") && node.field("operator")?.text() === "&&") {
     const right = node.field("right");
     return right ? [right] : [];
   }
-  if (node.kind() === "ternary_expression") {
+  if (node.is("ternary_expression")) {
     const branches = [node.field("consequence"), node.field("alternative")];
-    return branches.filter((branch): branch is SgNode<Js> => branch !== null);
+    return branches.filter((branch) => branch !== null);
   }
   return null;
 }
@@ -65,15 +73,15 @@ export function cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
   for (;;) {
     const parent = target.parent();
     if (!parent) return target;
-    if (parent.kind() === "pair") {
+    if (parent.is("pair")) {
       target = parent;
       continue;
     }
-    if (parent.kind() !== "object" && parent.kind() !== "array") return target;
-    const members = parent.kind() === "object" ? pairsOf(parent) : namedChildren(parent);
+    if (!parent.is("object") && !parent.is("array")) return target;
+    const members = parent.is("object") ? pairsOf(parent) : namedChildren(parent);
     if (members.length !== 1) return target;
     const grandparent = parent.parent();
-    if (!grandparent || (grandparent.kind() !== "pair" && grandparent.kind() !== "array")) {
+    if (!grandparent || (!grandparent.is("pair") && !grandparent.is("array"))) {
       return target;
     }
     target = parent;
@@ -82,12 +90,12 @@ export function cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
 
 // `[ ... ].filter(<any predicate>)` — return the inner array literal.
 export function unwrapFilterCall(node: SgNode<Js>): SgNode<Js> {
-  if (node.kind() !== "call_expression") return node;
+  if (!node.is("call_expression")) return node;
   const callee = node.field("function");
-  if (!callee || callee.kind() !== "member_expression") return node;
+  if (!callee || !callee.is("member_expression")) return node;
   if (callee.field("property")?.text() !== "filter") return node;
   const receiver = callee.field("object");
-  return receiver && receiver.kind() === "array" ? receiver : node;
+  return receiver && receiver.is("array") ? receiver : node;
 }
 
 // The `.filter(...)` text that followed the array, e.g. `.filter((x) => !!x)`.
