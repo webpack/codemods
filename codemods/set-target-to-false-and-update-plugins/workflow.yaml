@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/codemod-com/codemod/refs/heads/main/schemas/workflow.json
+
+version: "1"
+
+nodes:
+  - id: apply-transforms
+    name: Apply AST Transformations
+    type: automatic
+    steps:
+      - name: Transform Webpack 'target' function to 'false' and move to 'plugins'.
+        js-ast-grep:
+          js_file: src/workflow.ts
+          base_path: .
+          include:
+            - "**/*.tsx"
+            - "**/*.ts"
+            - "**/*.jsx"
+            - "**/*.js"
+            - "**/*.cts"
+            - "**/*.mts"
+          exclude:
+            - "**/node_modules/**"
+          language: typescript

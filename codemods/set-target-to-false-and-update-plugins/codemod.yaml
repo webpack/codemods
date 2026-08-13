@@ -1,0 +1,21 @@
+schema_version: "1.0"
+name: "@webpack/set-target-to-false-and-update-plugins"
+version: 1.0.0
+description: Transform Webpack 'target' function to 'false' and move to 'plugins'.
+author: akash-kumar-dev
+license: MIT
+workflow: workflow.yaml
+repository: "https://github.com/webpack/codemods/tree/HEAD/codemods/set-target-to-false-and-update-plugins"
+category: migration
+
+targets:
+  languages:
+    - javascript
+    - typescript
+
+keywords:
+  - webpack
+
+registry:
+  access: public
+  visibility: public

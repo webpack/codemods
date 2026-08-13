@@ -1,0 +1,12 @@
+{
+	"name": "@webpack/set-target-to-false-and-update-plugins",
+	"version": "1.0.0",
+	"description": "Transform Webpack 'target' function to 'false' and move to 'plugins'.",
+	"type": "module",
+	"scripts": {
+		"test": "npx codemod jssg test -l typescript ./src/workflow.ts"
+	},
+	"devDependencies": {
+		"@codemod.com/jssg-types": "^1.6.3"
+	}
+}
