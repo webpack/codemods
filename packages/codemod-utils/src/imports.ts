@@ -21,7 +21,7 @@ function bindingStatementOf(identifier: SgNode<Js>): SgNode<Js> | null {
     if (kind === "import_statement") return current;
     if (kind === "lexical_declaration" || kind === "variable_declaration") {
       const declarators = namedChildren(current).filter(
-        (child) => child.kind() === "variable_declarator",
+        (child) => child.is("variable_declarator"),
       );
       return declarators.length === 1 ? current : null;
     }
