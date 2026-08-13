@@ -88,13 +88,14 @@ export function cascadeRemovalTarget(node: SgNode<Js>): SgNode<Js> {
   }
 }
 
-// `[ ... ].filter(<any predicate>)` — return the inner array literal.
+// `[ ... ].filter(<predicate>)` — return the inner array literal.
 export function unwrapFilterCall(node: SgNode<Js>): SgNode<Js> {
   if (!node.is("call_expression")) return node;
-  const callee = node.field("function");
+  const callee = namedChildren(node)[0] as SgNode<Js> | undefined;
   if (!callee || !callee.is("member_expression")) return node;
-  if (callee.field("property")?.text() !== "filter") return node;
-  const receiver = callee.field("object");
+  const parts = namedChildren(callee);
+  if (parts.length !== 2 || parts[1].text() !== "filter") return node;
+  const receiver = parts[0];
   return receiver && receiver.is("array") ? receiver : node;
 }
 

@@ -24,7 +24,7 @@ export function loaderNameOf(node: SgNode<Js>): string | null {
     return node.find({ rule: { kind:"string_fragment"  } })?.text() ?? null;
   }
   if (node.is("call_expression")) {
-    const callee = node.field("function");
+    const callee = namedChildren(node)[0];
     const receiver = callee?.is("member_expression") ? callee.field("object")?.text() : null;
     if (
       !callee ||
@@ -33,7 +33,7 @@ export function loaderNameOf(node: SgNode<Js>): string | null {
     ) {
       return null;
     }
-    const argumentsNode = node.field("arguments");
+    const argumentsNode = namedChildren(node)[1];
     const args = argumentsNode ? namedChildren(argumentsNode) : [];
 
     if (args.length !== 1 || !args[0].is("string")) return null;
