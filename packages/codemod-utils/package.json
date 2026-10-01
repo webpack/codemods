@@ -19,7 +19,7 @@
   "author": "Sebastian Beltran <bjohansebas@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "@jssg/utils": "0.0.9"
+    "@jssg/utils": "0.0.10"
   },
   "devDependencies": {
     "@codemod.com/jssg-types": "^1.6.2"
