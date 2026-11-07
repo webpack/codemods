@@ -2,8 +2,10 @@ import type Json from "@codemod.com/jssg-types/langs/json";
 import type { SgRoot } from "@codemod.com/jssg-types/main";
 import { removeUnusedDependencies } from "../src/remove-dependencies";
 
-// Unit fixtures describe packages with no remaining source references.
-// Workflow integration tests cover collection and retention across files.
+// Simulate absent, partial, and completed reference scans. The workflow
+// integration tests cover collecting those references across source files.
 export default async function transform(root: SgRoot<Json>): Promise<string | null> {
-  return removeUnusedDependencies(root, new Set());
+  if (root.filename().includes("missing-scan")) return removeUnusedDependencies(root, null);
+  const remaining = root.filename().includes("source-reference") ? new Set(["html-loader"]) : new Set<string>();
+  return removeUnusedDependencies(root, remaining);
 }
