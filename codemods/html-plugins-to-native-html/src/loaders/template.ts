@@ -29,6 +29,14 @@ const CONTEXT_METHODS = new Map([
   ["emitError", "(error: Error) => void"],
 ]);
 
+const STRING_CONTEXT_PROPERTIES = new Set([
+  "resource",
+  "resourcePath",
+  "resourceQuery",
+  "resourceFragment",
+  "context",
+]);
+
 function adaptTemplateContext(
   value: SgNode<Js>,
   context: SgNode<Js>,
@@ -109,7 +117,7 @@ function adaptTemplateContext(
   return edits.length ? value.commitEdits(edits) : value.text();
 }
 
-function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
+function returnsString(node: SgNode<Js> | null, strings: Set<string>, context?: string): boolean {
   if (!node) {
     return false;
   }
@@ -118,24 +126,36 @@ function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
     return true;
   }
 
-  if (node.is("identifier") || node.is("member_expression")) {
+  if (node.is("identifier")) {
     return strings.has(node.text());
   }
 
-  if (node.is("parenthesized_expression")) {
-    return returnsString(namedChildren(node)[0], strings);
+  if (node.is("member_expression")) {
+    const object = node.field("object");
+    const property = node.field("property");
+
+    return (
+      !!object?.is("identifier") &&
+      object.text() === context &&
+      STRING_CONTEXT_PROPERTIES.has(property?.text() ?? "")
+    );
   }
 
-  if (node.is("binary_expression") && node.field("operator")?.text() === "+") {
+  if (node.is("parenthesized_expression")) {
+    return returnsString(namedChildren(node)[0], strings, context);
+  }
+
+  if (node.is("binary_expression") && node.field("operator")?.is("+")) {
     return (
-      returnsString(node.field("left"), strings) || returnsString(node.field("right"), strings)
+      returnsString(node.field("left"), strings, context) ||
+      returnsString(node.field("right"), strings, context)
     );
   }
 
   if (node.is("ternary_expression")) {
     return (
-      returnsString(node.field("consequence"), strings) &&
-      returnsString(node.field("alternative"), strings)
+      returnsString(node.field("consequence"), strings, context) &&
+      returnsString(node.field("alternative"), strings, context)
     );
   }
 
@@ -145,7 +165,7 @@ function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
     return (
       callee?.is("member_expression") &&
       STRING_METHODS.has(callee.field("property")?.text() ?? "") &&
-      returnsString(callee.field("object"), strings)
+      returnsString(callee.field("object"), strings, context)
     );
   }
 
@@ -197,18 +217,6 @@ export function nativeTemplate(value: SgNode<Js>, typescript = false): string | 
 
   const strings = new Set(name ? [name.text()] : []);
 
-  if (context) {
-    for (const property of [
-      "resource",
-      "resourcePath",
-      "resourceQuery",
-      "resourceFragment",
-      "context",
-    ]) {
-      strings.add(`${context.text()}.${property}`);
-    }
-  }
-
   const body = value.field("body");
 
   if (!body) {
@@ -216,7 +224,7 @@ export function nativeTemplate(value: SgNode<Js>, typescript = false): string | 
   }
 
   if (!body.is("statement_block")) {
-    return returnsString(body, strings) ? text : null;
+    return returnsString(body, strings, context?.text()) ? text : null;
   }
 
   const statements = namedChildren(body).filter((node) => !node.is("comment"));
@@ -243,14 +251,17 @@ export function nativeTemplate(value: SgNode<Js>, typescript = false): string | 
       continue;
     }
 
-    if (!statement.is("lexical_declaration") || !statement.text().startsWith("const ")) {
+    if (!statement.is("lexical_declaration") || !statement.field("kind")?.is("const")) {
       return null;
     }
 
     for (const declaration of namedChildren(statement).filter((node) => !node.is("comment"))) {
       const binding = declaration.field("name");
 
-      if (!binding?.is("identifier") || !returnsString(declaration.field("value"), strings)) {
+      if (
+        !binding?.is("identifier") ||
+        !returnsString(declaration.field("value"), strings, context?.text())
+      ) {
         return null;
       }
 
@@ -258,7 +269,11 @@ export function nativeTemplate(value: SgNode<Js>, typescript = false): string | 
     }
   }
 
-  return returnsString(namedChildren(last).find((node) => !node.is("comment")) ?? null, strings)
+  return returnsString(
+    namedChildren(last).find((node) => !node.is("comment")) ?? null,
+    strings,
+    context?.text(),
+  )
     ? text
     : null;
 }

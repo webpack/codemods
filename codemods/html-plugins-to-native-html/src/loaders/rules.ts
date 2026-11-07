@@ -12,7 +12,9 @@ import {
   loaderNameOf,
   namedChildren,
   pairsOf,
+  parseExpression,
   ruleMatchesFiles,
+  sameSyntax,
   unwrapFilterCall,
 } from "@webpack/codemod-utils";
 import { ConfigPlans, dedupeProps } from "../config-plan";
@@ -20,7 +22,15 @@ import { collectLoaderFindings, LOADER_NAME, type LoaderFindings } from "./optio
 
 const HTML_SAMPLE_FILES = ["/file.html"];
 
-const DEFAULT_HTML_TESTS = new Set(["/\\.html$/", "/\\.html$/i"]);
+function isDefaultHtmlTest(node: SgNode<Js> | null | undefined): boolean {
+  if (!node?.is("regex")) {
+    return false;
+  }
+
+  const flags = node.field("flags")?.text() ?? "";
+
+  return node.field("pattern")?.text() === "\\.html$" && (flags === "" || flags === "i");
+}
 
 interface RuleMigration {
   pair: SgNode<Js>;
@@ -230,14 +240,16 @@ export class HtmlLoaderRules {
       const existing = parser?.is("object")
         ? findPair(parser, prop.name)?.field("value")
         : undefined;
+      const replacement = parseExpression(prop.valueText);
 
-      if (existing && existing.text() !== prop.valueText) {
+      if (existing && !sameSyntax(existing, replacement)) {
         return false;
       }
 
       if (
         swap.findings.parserProps.some(
-          (other) => other.name === prop.name && other.valueText !== prop.valueText,
+          (other) =>
+            other.name === prop.name && !sameSyntax(parseExpression(other.valueText), replacement),
         )
       ) {
         return false;
@@ -281,7 +293,7 @@ export class HtmlLoaderRules {
 
     const survives =
       !swap.trivial ||
-      !DEFAULT_HTML_TESTS.has(findPair(swap.ruleObject, "test")?.field("value")?.text() ?? "") ||
+      !isDefaultHtmlTest(findPair(swap.ruleObject, "test")?.field("value")) ||
       swap.kept.length > 0 ||
       swap.findings.parserProps.length > 0;
 
@@ -297,7 +309,7 @@ export class HtmlLoaderRules {
     }
 
     const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
-    const multiline = swap.ruleObject.text().includes("\n");
+    const multiline = swap.ruleObject.range().start.line !== swap.ruleObject.range().end.line;
     const separator = multiline ? `,\n${indent}` : ", ";
     let replacement = "";
 

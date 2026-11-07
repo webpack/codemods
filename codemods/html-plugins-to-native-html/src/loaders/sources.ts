@@ -1,10 +1,10 @@
 import type Js from "@codemod.com/jssg-types/langs/javascript";
 import type { SgNode } from "@codemod.com/jssg-types/main";
-import { findPair, keyName, namedChildren, unquote } from "@webpack/codemod-utils";
+import { findPair, keyName, namedChildren, staticString, unquote } from "@webpack/codemod-utils";
 import { callbackParameters, constantBoolean, usesParameter } from "./callbacks";
 
-function freshName(source: string, base: string): string {
-  while (source.includes(base)) {
+function freshName(identifiers: Set<string>, base: string): string {
+  while (identifiers.has(base)) {
     base += "_";
   }
 
@@ -31,7 +31,37 @@ function sourceFilter(
   }
 
   // parse5's foreign attribute namespace metadata is not exposed by native HTML.
-  if (usesParameter(value, params, 2) && /\b(namespace|prefix)\b/.test(value.text())) {
+  const metadataAccesses = value.findAll({
+    rule: {
+      any: [
+        { kind: "property_identifier" },
+        { kind: "shorthand_property_identifier_pattern" },
+        { kind: "string" },
+        { kind: "template_string" },
+        { kind: "binary_expression" },
+        { kind: "subscript_expression" },
+      ],
+    },
+  });
+
+  if (
+    usesParameter(value, params, 2) &&
+    metadataAccesses.some((node) => {
+      if (node.is("subscript_expression")) {
+        const index = node.field("index");
+        const name = staticString(index);
+
+        return name === "namespace" || name === "prefix" || (name === null && !index.is("number"));
+      }
+
+      const name =
+        node.is("property_identifier") || node.is("shorthand_property_identifier_pattern")
+          ? node.text()
+          : staticString(node);
+
+      return name === "namespace" || name === "prefix";
+    })
+  ) {
     return null;
   }
 
@@ -105,6 +135,13 @@ export function nativeSources(
   }
 
   const edits = [];
+  const identifiers = new Set(
+    value
+      .findAll({
+        rule: { any: [{ kind: "identifier" }, { kind: "shorthand_property_identifier" }] },
+      })
+      .map((node) => node.text()),
+  );
 
   for (const source of namedChildren(list)) {
     if (source.is("comment")) {
@@ -172,8 +209,8 @@ export function nativeSources(
       return null;
     }
 
-    const attrs = freshName(value.text(), "htmlAttributes");
-    const url = freshName(value.text(), "htmlUrl");
+    const attrs = freshName(identifiers, "htmlAttributes");
+    const url = freshName(identifiers, "htmlUrl");
     const conditions: string[] = [];
 
     if (filter) {
