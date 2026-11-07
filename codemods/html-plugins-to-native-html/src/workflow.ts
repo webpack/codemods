@@ -21,6 +21,7 @@ import {
 } from "@webpack/codemod-utils";
 import { collectMinification, planMinification, type Minification } from "./minification";
 import { queueTemplate, recordSource } from "./migration-state";
+import { nativeSources } from "./loader-options";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
 const LOADER_NAME = "html-loader";
@@ -116,6 +117,7 @@ interface InstanceFindings {
 
 // Loader options translated into the surviving rule, plus the ones lost.
 interface LoaderFindings {
+  supported: boolean;
   lost: string[];
   parserProps: HtmlProp[];
   minification: Minification[];
@@ -336,7 +338,11 @@ class HtmlMigration {
     findings.lost.push(...minification.lost);
     if (!optionsValue) return;
     if (optionsValue.kind() !== "object") {
-      findings.lost.push(`${LOADER_NAME}.options`);
+      findings.supported = false;
+      return;
+    }
+    if (namedChildren(optionsValue).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) {
+      findings.supported = false;
       return;
     }
     for (const optionPair of pairsOf(optionsValue)) {
@@ -345,12 +351,9 @@ class HtmlMigration {
       if (name !== null && DROPPABLE_LOADER_OPTIONS.has(name)) continue;
       if (name === "minimize") continue;
       if (name === "sources" && value) {
-        // Booleans map to the rule's parser; source lists need a human.
-        if (value.kind() === "true" || value.kind() === "false") {
-          findings.parserProps.push({ name: "sources", valueText: value.text() });
-        } else {
-          findings.lost.push(this.describeLost(`${LOADER_NAME}.sources`));
-        }
+        const sources = nativeSources(value);
+        if (sources === null) findings.supported = false;
+        else findings.parserProps.push({ name: "sources", valueText: sources });
         continue;
       }
       findings.lost.push(this.describeLost(`${LOADER_NAME}.${name ?? "options"}`));
@@ -385,7 +388,7 @@ class HtmlMigration {
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, lost: [], parserProps: [], minification: [] };
       for (const element of elements) this.collectLoaderFindings(element, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -409,7 +412,7 @@ class HtmlMigration {
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, lost: [], parserProps: [], minification: [] };
       this.collectLoaderFindings(ruleObject, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -436,6 +439,7 @@ class HtmlMigration {
     trivial: boolean;
     optionsPair: SgNode<Js> | null;
   }): void {
+    if (!swap.findings.supported) return;
     const config = findConfigObjectFor(swap.pair);
     if (config && this.blockedConfigs.has(config.range().start.index)) return;
     const experiments = config && findPair(config, "experiments")?.field("value");
@@ -444,6 +448,14 @@ class HtmlMigration {
       (experiments && experiments.kind() !== "object") ||
       (swap.findings.parserProps.length && parser && parser.kind() !== "object")
     ) return;
+    // Do not replace loader behavior with a conflicting existing parser option,
+    // or flatten differently configured loader branches into one parser.
+    for (const prop of swap.findings.parserProps) {
+      const existing = parser?.kind() === "object" ? findPair(parser, prop.name)?.field("value") : undefined;
+      if (existing && existing.text() !== prop.valueText) return;
+      if (swap.findings.parserProps.some((other) => other.name === prop.name && other.valueText !== prop.valueText)) return;
+    }
+    swap.findings.parserProps = dedupeProps(swap.findings.parserProps);
     if (config) {
       this.planFor(config).minification.push(
         ...(swap.findings.minification.length ? swap.findings.minification : [{ html: null, lost: [] }]),

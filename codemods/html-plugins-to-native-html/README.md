@@ -21,7 +21,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 - Removes rules that only wire up `html-loader` (cascading to empty `rules`/`module` entries): with no user rule matching `.html`, webpack's `experiments.html: "auto"` default enables native HTML by itself, and importing an `.html` file from JS natively yields the processed HTML string — the same shape `html-loader` exported.
 - Rules with extra conditions or surviving options are kept with `type: "html"` instead — and since their presence disables the `"auto"` default, `experiments.html: true` is added to that configuration.
 - Any other loader in the chain (template compilers, custom ones) keeps working in front of native HTML: it stays in `use` while `html-loader` is dropped.
-- Loader options: boolean `sources` becomes the rule's `parser: { sources }`; `esModule` is dropped (native exports are ESM), and `minimize` uses the same native minifier option mapping as the plugin; a `sources` object or `preprocessor` function is flagged with a review comment (`preprocessor` maps manually to the rule's `parser.template`, which is synchronous and receives `(source, { module, resource })`).
+- Loader options: boolean `sources` becomes the rule's `parser: { sources }`, and static `sources.list` arrays become `parser.sources` (including `"..."`, `src` and `srcset` entries); `esModule` is dropped (native exports are ESM), and `minimize` uses the same native minifier option mapping as the plugin; a `preprocessor` function is flagged with a review comment (`preprocessor` maps manually to the rule's `parser.template`, which is synchronous and receives `(source, { module, resource })`).
 
 ### `template`
 
@@ -37,7 +37,8 @@ All changes are returned to the codemod runner; the transforms do not use filesy
 - Plugin instantiations whose options are not an object literal, or contain spreads/shorthand properties.
 - Configurations with computed `output` or `experiments`, dynamic template paths, or templates whose JS entry cannot be represented by a single script.
 - Multi-page configurations with different minification settings per page: native minification applies to the whole compilation.
-- Rules whose existing dynamic `parser` or `experiments` cannot safely receive the migrated settings.
+- Rules whose existing dynamic `parser` or `experiments` cannot safely receive the migrated settings, or whose parser options conflict with the migrated values.
+- Loader source lists with callbacks (`filter`/`urlFilter`), `scriptingEnabled`, dynamic expressions or spreads; these require manual adaptation to the native API.
 
 ### Minification
 
