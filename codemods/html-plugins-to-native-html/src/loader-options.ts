@@ -9,8 +9,21 @@ function callbackParameters(value: SgNode<Js>): SgNode<Js>[] | null {
   const parameters = value.field("parameters");
   const parameter = value.field("parameter");
   const params = parameters ? namedChildren(parameters).filter((node) => node.kind() !== "comment") : parameter ? [parameter] : [];
+  if (params.some((param) => param.field("value") || param.kind() === "assignment_pattern" || param.kind() === "rest_pattern")) return null;
   const names = params.map((param) => param.field("pattern") ?? param);
   return names.every((name) => name.kind() === "identifier") ? names : null;
+}
+
+export function isIdentityCallback(value: SgNode<Js>): boolean {
+  const params = callbackParameters(value);
+  if (!params?.length) return false;
+  let body = value.field("body");
+  if (body?.kind() === "statement_block") {
+    const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
+    if (statements.length !== 1 || statements[0].kind() !== "return_statement") return false;
+    body = namedChildren(statements[0]).find((node) => node.kind() !== "comment") ?? null;
+  }
+  return body?.kind() === "identifier" && body.text() === params[0].text();
 }
 
 function usesParameter(value: SgNode<Js>, params: SgNode<Js>[], index: number): boolean {
@@ -191,7 +204,7 @@ function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
 
 // Native templates must synchronously return a string. Limit automatic migration
 // to inline string transforms whose result we can establish without executing
-// user code. LoaderContext and async/unknown calls require manual adaptation.
+// user code. Unsupported context APIs and async/unknown returns need adaptation.
 export function nativeTemplate(value: SgNode<Js>, typescript = false): string | null {
   if (!["arrow_function", "function_expression"].includes(value.kind())) return null;
   if (value.children().some((node) => node.kind() === "async")) return null;

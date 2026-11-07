@@ -21,7 +21,7 @@ import {
 } from "@webpack/codemod-utils";
 import { collectMinification, planMinification, type Minification } from "./minification";
 import { queueTemplate, recordSource } from "./migration-state";
-import { nativeSources, nativeTemplate } from "./loader-options";
+import { isIdentityCallback, nativeSources, nativeTemplate } from "./loader-options";
 import { templateScriptTag } from "./templates";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
@@ -32,8 +32,6 @@ const DEFAULT_HTML_TESTS = new Set(["/\\.html$/", "/\\.html$/i"]);
 const HEAD_TAG_OPTIONS = new Set(["title", "meta", "favicon", "base"]);
 // Build-ergonomics options with no effect on the emitted page.
 const DROPPABLE_OPTIONS = new Set(["cache", "showErrors", "chunksSortMode"]);
-// Native HTML exports are ESM.
-const DROPPABLE_LOADER_OPTIONS = new Set(["esModule"]);
 // Manual migration paths appended to the review comment where one exists.
 const LOST_OPTION_HINTS = new Map([
   ["publicPath", "set output.publicPath"],
@@ -42,15 +40,6 @@ const LOST_OPTION_HINTS = new Map([
   ["excludeChunks", "use per-entry `html` descriptors"],
   ["scriptLoading", "module scripts come from output.module"],
   ["templateContent", "author the page as an .html entry file"],
-  ["html-loader.sources", "customize the rule's parser.sources list"],
-  [
-    "html-loader.preprocessor",
-    "move it to the rule's parser.template — synchronous (source, { module, resource }) => string",
-  ],
-  [
-    "html-loader.postprocessor",
-    "tap HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml for emitted pages",
-  ],
 ]);
 
 // Plugin hooks renamed to the native `HtmlModulesPlugin.getCompilationHooks`
@@ -116,13 +105,22 @@ interface InstanceFindings {
   scriptLoadingModule: boolean;
 }
 
-// Loader options translated into the surviving rule, plus the ones lost.
+// Loader options translated into the surviving rule and migration eligibility.
 interface LoaderFindings {
   supported: boolean;
   sourceDefaults: boolean;
-  lost: string[];
   parserProps: HtmlProp[];
   minification: Minification[];
+}
+
+interface RuleMigration {
+  pair: SgNode<Js>;
+  ruleObject: SgNode<Js>;
+  kept: SgNode<Js>[];
+  filterSuffix: string;
+  findings: LoaderFindings;
+  trivial: boolean;
+  optionsPair: SgNode<Js> | null;
 }
 
 // Properties to add to one webpack config object once all removals are known.
@@ -324,8 +322,8 @@ class HtmlMigration {
     return loaderNameOf(node) === LOADER_NAME;
   }
 
-  // Translate each html-loader option into the surviving rule's `parser` when
-  // native HTML has an equivalent; everything else lands in `lost`.
+  // Translate known equivalents; retain the config when an option would lose
+  // executable behavior or change the module's export contract.
   private collectLoaderFindings(node: SgNode<Js>, findings: LoaderFindings): void {
     const branches = guardBranchesOf(node);
     if (branches) {
@@ -339,7 +337,7 @@ class HtmlMigration {
       `${LOADER_NAME}.minimize`,
     );
     findings.minification.push(minification);
-    findings.lost.push(...minification.lost);
+    if (minification.lost.length) findings.supported = false;
     if (!optionsValue) return;
     if (optionsValue.kind() !== "object") {
       findings.supported = false;
@@ -352,7 +350,12 @@ class HtmlMigration {
     for (const optionPair of pairsOf(optionsValue)) {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
-      if (name !== null && DROPPABLE_LOADER_OPTIONS.has(name)) continue;
+      if (name === "esModule") {
+        // Native HTML exposes a default string export and its CJS shim also
+        // returns that string directly, so both literal settings can migrate.
+        if (value?.kind() !== "true" && value?.kind() !== "false") findings.supported = false;
+        continue;
+      }
       if (name === "minimize") continue;
       if (name === "sources" && value) {
         const sources = nativeSources(value, /\.[cm]?tsx?$/.test(this.configFileName));
@@ -369,7 +372,8 @@ class HtmlMigration {
         else findings.parserProps.push({ name: "template", valueText: template });
         continue;
       }
-      findings.lost.push(this.describeLost(`${LOADER_NAME}.${name ?? "options"}`));
+      if (name === "postprocessor" && value && isIdentityCallback(value)) continue;
+      findings.supported = false;
     }
   }
 
@@ -389,6 +393,7 @@ class HtmlMigration {
   // default takes over); surviving rules get `type: "html"` and turn the
   // default off, so `experiments.html: true` is added to their config.
   private transformRules(usePairs: SgNode<Js>[], loaderPairs: SgNode<Js>[]): void {
+    const migrations: RuleMigration[] = [];
     for (const pair of usePairs) {
       const originalValue = pair.field("value");
       if (!originalValue) continue;
@@ -401,13 +406,13 @@ class HtmlMigration {
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { supported: true, sourceDefaults: false, lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, sourceDefaults: false, parserProps: [], minification: [] };
       for (const element of elements) this.collectLoaderFindings(element, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
         return name === "test" || name === "use";
       });
-      this.applyRuleMigration({
+      migrations.push({
         pair,
         ruleObject,
         kept,
@@ -425,13 +430,13 @@ class HtmlMigration {
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { supported: true, sourceDefaults: false, lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, sourceDefaults: false, parserProps: [], minification: [] };
       this.collectLoaderFindings(ruleObject, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
         return name === "test" || name === "loader" || name === "options";
       });
-      this.applyRuleMigration({
+      migrations.push({
         pair,
         ruleObject,
         kept: [],
@@ -441,38 +446,47 @@ class HtmlMigration {
         optionsPair: findPair(ruleObject, "options") ?? null,
       });
     }
+    // A retained html-loader emits JavaScript. Enabling native HTML or replacing
+    // an HTML plugin's template beside it would parse that JavaScript as HTML.
+    // Decide this before making edits to any of the owning config's rules.
+    for (const migration of migrations) {
+      if (this.canMigrateRule(migration)) continue;
+      const config = findConfigObjectFor(migration.pair);
+      if (config) {
+        this.blockedConfigs.add(config.range().start.index);
+        this.pluginRetained = true;
+      }
+    }
+    for (const migration of migrations) this.applyRuleMigration(migration);
   }
 
-  private applyRuleMigration(swap: {
-    pair: SgNode<Js>;
-    ruleObject: SgNode<Js>;
-    kept: SgNode<Js>[];
-    filterSuffix: string;
-    findings: LoaderFindings;
-    trivial: boolean;
-    optionsPair: SgNode<Js> | null;
-  }): void {
-    if (!swap.findings.supported) return;
+  private canMigrateRule(swap: RuleMigration): boolean {
+    if (!swap.findings.supported) return false;
     const config = findConfigObjectFor(swap.pair);
-    if (config && this.blockedConfigs.has(config.range().start.index)) return;
     const experiments = config && findPair(config, "experiments")?.field("value");
     const parser = findPair(swap.ruleObject, "parser")?.field("value");
     if (
       (experiments && experiments.kind() !== "object") ||
       (swap.findings.parserProps.length && parser && parser.kind() !== "object")
-    ) return;
+    ) return false;
     // Do not replace loader behavior with a conflicting existing parser option,
     // or flatten differently configured loader branches into one parser.
     for (const prop of swap.findings.parserProps) {
       const existing = parser?.kind() === "object" ? findPair(parser, prop.name)?.field("value") : undefined;
-      if (existing && existing.text() !== prop.valueText) return;
-      if (swap.findings.parserProps.some((other) => other.name === prop.name && other.valueText !== prop.valueText)) return;
+      if (existing && existing.text() !== prop.valueText) return false;
+      if (swap.findings.parserProps.some((other) => other.name === prop.name && other.valueText !== prop.valueText)) return false;
     }
+    return !swap.findings.sourceDefaults || (!!config && this.canNormalizeSourceDefaults(config));
+  }
+
+  private applyRuleMigration(swap: RuleMigration): void {
+    if (!this.canMigrateRule(swap)) return;
+    const config = findConfigObjectFor(swap.pair);
+    if (config && this.blockedConfigs.has(config.range().start.index)) return;
+    const experiments = config && findPair(config, "experiments")?.field("value");
+    const parser = findPair(swap.ruleObject, "parser")?.field("value");
     swap.findings.parserProps = dedupeProps(swap.findings.parserProps);
-    if (swap.findings.sourceDefaults) {
-      if (!config || !this.canNormalizeSourceDefaults(config)) return;
-      this.planFor(config).sourceDefaults = true;
-    }
+    if (swap.findings.sourceDefaults && config) this.planFor(config).sourceDefaults = true;
     if (config) {
       this.planFor(config).minification.push(
         ...(swap.findings.minification.length ? swap.findings.minification : [{ html: null, lost: [] }]),
@@ -482,7 +496,6 @@ class HtmlMigration {
       !swap.trivial ||
       !DEFAULT_HTML_TESTS.has(findPair(swap.ruleObject, "test")?.field("value")?.text() ?? "") ||
       swap.kept.length > 0 ||
-      swap.findings.lost.length > 0 ||
       swap.findings.parserProps.length > 0;
     if (!survives) {
       // Explicitly disabled HTML must be enabled even when its loader rule goes.
@@ -494,14 +507,8 @@ class HtmlMigration {
     }
     const indent = lineIndent(this.editor.source, swap.pair.range().start.index);
     const multiline = swap.ruleObject.text().includes("\n");
-    // Flag dropped loader options right where they lived.
-    let commentPrefix = "";
-    if (swap.findings.lost.length) {
-      const message = `Removed loader options without a native HTML equivalent: ${[...new Set(swap.findings.lost)].join(", ")}`;
-      commentPrefix = multiline ? `// ${message}\n${indent}` : `/* ${message} */ `;
-    }
     const separator = multiline ? `,\n${indent}` : ", ";
-    let replacement = `${commentPrefix}`;
+    let replacement = "";
     if (swap.kept.length) {
       // Guarded entries keep the original `.filter(...)` for their falsy branch.
       const keptTexts = swap.kept.map((loader) => loader.text());

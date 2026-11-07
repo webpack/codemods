@@ -47,9 +47,14 @@ test("workflow applies HTML and dependency edits through the runner, without fs 
     assert.deepEqual(readFileSync(path.join(target, "unrelated.html")), readFileSync(path.join(fixture, "unrelated.html")));
     const rootManifest = JSON.parse(readFileSync(path.join(target, "package.json"), "utf8"));
     assert.ok(rootManifest.devDependencies["html-webpack-plugin"], "a skipped config still uses this package");
-    assert.equal(rootManifest.devDependencies["html-loader"], undefined);
+    assert.ok(rootManifest.devDependencies["html-loader"], "the retained legacy loader still uses this package");
     const migrated = JSON.parse(readFileSync(path.join(target, "packages/migrated/package.json"), "utf8"));
     assert.equal(migrated.devDependencies["html-webpack-plugin"], undefined);
+    assert.equal(migrated.devDependencies["html-loader"], undefined);
+    for (const file of ["package.json", "webpack.config.cjs", "index.html"]) {
+      const relative = `packages/legacy-loader/${file}`;
+      assert.deepEqual(readFileSync(path.join(target, relative)), readFileSync(path.join(fixture, relative)));
+    }
     assert.equal(migrated.devDependencies["favicons-webpack-plugin"], undefined);
     const faviconConfig = readFileSync(path.join(target, "packages/migrated/webpack.config.cjs"), "utf8");
     assert.match(faviconConfig, /favicon: "\.\/logo.png"/);
