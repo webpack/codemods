@@ -364,7 +364,7 @@ class HtmlMigration {
         continue;
       }
       if (name === "preprocessor" && value) {
-        const template = nativeTemplate(value);
+        const template = nativeTemplate(value, /\.[cm]?tsx?$/.test(this.configFileName));
         if (template === null) findings.supported = false;
         else findings.parserProps.push({ name: "template", valueText: template });
         continue;

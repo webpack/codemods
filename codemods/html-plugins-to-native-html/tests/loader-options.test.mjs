@@ -26,3 +26,29 @@ test("URL filter adapter receives individual normalized src values", () => {
     assert.equal(newFilter(new Map(), raw), oldFilter("src", normalized, "/src/index.html"));
   }
 });
+
+test("template context migration preserves resource parts, including escaped delimiters", () => {
+  const before = fixture("loader-preprocessor-resource-parts", "input.js").options.preprocessor;
+  const after = fixture("loader-preprocessor-resource-parts").parser.template;
+  for (const [resource, resourcePath, resourceQuery, resourceFragment] of [
+    ["/src/index.html", "/src/index.html", "", ""],
+    ["/src/index.html?theme=dark#top", "/src/index.html", "?theme=dark", "#top"],
+    ["/src/a\0?b.html?theme\0#dark#top", "/src/a?b.html", "?theme#dark", "#top"],
+  ]) {
+    assert.equal(after("HTML", { resource, module: { context: "/src" } }), before("HTML", { resource, resourcePath, resourceQuery, resourceFragment, context: "/src" }));
+  }
+});
+
+test("template migration preserves dependency registration and warnings", () => {
+  const before = fixture("loader-preprocessor-dependencies", "input.js").options.preprocessor;
+  const after = fixture("loader-preprocessor-dependencies").parser.template;
+  const invoke = (fn) => {
+    const events = [];
+    const html = fn("  <p>HTML</p>  ", {
+      addDependency: (file) => events.push(["dependency", file]),
+      emitWarning: (error) => events.push(["warning", error.message]),
+    });
+    return { html, events };
+  };
+  assert.deepEqual(invoke(after), invoke(before));
+});

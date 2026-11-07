@@ -124,10 +124,55 @@ const STRING_METHODS = new Set([
   "slice", "substring", "toLowerCase", "toUpperCase", "trim", "trimEnd", "trimStart",
 ]);
 
+const CONTEXT_METHODS = new Map([
+  ["addDependency", "(dependency: string) => void"],
+  ["addContextDependency", "(dependency: string) => void"],
+  ["addMissingDependency", "(dependency: string) => void"],
+  ["addBuildDependency", "(dependency: string) => void"],
+  ["emitWarning", "(warning: Error) => void"],
+  ["emitError", "(error: Error) => void"],
+]);
+
+function adaptTemplateContext(value: SgNode<Js>, context: SgNode<Js>, typescript: boolean): string | null {
+  const body = value.field("body")!;
+  const edits = [];
+  const properties = new Map<string, string>();
+  const name = context.text();
+  const resourcePattern = '/^((?:\\0.|[^?#\\0])*)(\\?(?:\\0.|[^#\\0])*)?(#.*)?$/';
+  for (const reference of body.findAll({ rule: { kind: "identifier" } }).filter((node) => node.text() === name)) {
+    const member = reference.parent();
+    if (member?.kind() !== "member_expression" || member.field("object")?.range().start.index !== reference.range().start.index) return null;
+    const property = member.field("property")?.text();
+    if (!property) return null;
+    if (CONTEXT_METHODS.has(property)) properties.set(property, CONTEXT_METHODS.get(property)!);
+    else if (property === "context") {
+      properties.set("module", "{ context: string }");
+      edits.push(member.replace(`${name}.module.context`));
+    } else if (["resource", "resourcePath", "resourceQuery", "resourceFragment"].includes(property)) {
+      properties.set("resource", "string");
+      if (property === "resourcePath") {
+        edits.push(member.replace(`${name}.resource.replace(${resourcePattern}, "$1").replace(/\\0(.)/g, "$1")`));
+      } else if (property === "resourceQuery") {
+        edits.push(member.replace(`(${name}.resource.match(${resourcePattern})?.[2]?.replace(/\\0(.)/g, "$1") ?? "")`));
+      } else if (property === "resourceFragment") {
+        edits.push(member.replace(`(${name}.resource.match(${resourcePattern})?.[3] ?? "")`));
+      }
+    } else return null;
+  }
+  if (typescript) {
+    const parameter = namedChildren(value.field("parameters")!).filter((node) => node.kind() !== "comment")[1];
+    const type = parameter.field("type");
+    const text = `: { ${[...properties].map(([key, type]) => `${key}: ${type}`).join("; ")} }`;
+    if (type) edits.push(type.replace(text));
+    else edits.push({ startPos: context.range().end.index, endPos: context.range().end.index, insertedText: text });
+  }
+  return edits.length ? value.commitEdits(edits) : value.text();
+}
+
 function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
   if (!node) return false;
   if (node.kind() === "string" || node.kind() === "template_string") return true;
-  if (node.kind() === "identifier") return strings.has(node.text());
+  if (node.kind() === "identifier" || node.kind() === "member_expression") return strings.has(node.text());
   if (node.kind() === "parenthesized_expression") return returnsString(namedChildren(node)[0], strings);
   if (node.kind() === "binary_expression" && node.field("operator")?.text() === "+") {
     return returnsString(node.field("left"), strings) || returnsString(node.field("right"), strings);
@@ -147,7 +192,7 @@ function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
 // Native templates must synchronously return a string. Limit automatic migration
 // to inline string transforms whose result we can establish without executing
 // user code. LoaderContext and async/unknown calls require manual adaptation.
-export function nativeTemplate(value: SgNode<Js>): string | null {
+export function nativeTemplate(value: SgNode<Js>, typescript = false): string | null {
   if (!["arrow_function", "function_expression"].includes(value.kind())) return null;
   if (value.children().some((node) => node.kind() === "async")) return null;
   if (value.findAll({ rule: { any: [
@@ -155,20 +200,24 @@ export function nativeTemplate(value: SgNode<Js>): string | null {
     { kind: "assignment_expression" }, { kind: "augmented_assignment_expression" },
     { kind: "update_expression" }, { pattern: "arguments" },
   ] } }).length) return null;
-  const parameters = value.field("parameters");
-  const parameter = value.field("parameter");
-  const params = parameters ? namedChildren(parameters).filter((node) => node.kind() !== "comment") : parameter ? [parameter] : [];
-  if (params.length > 1) return null;
-  const name = params[0]?.field("pattern") ?? params[0];
-  if (name && name.kind() !== "identifier") return null;
+  const params = callbackParameters(value);
+  if (!params || params.length > 2) return null;
+  const name = params[0];
+  const context = params[1];
+  const text = context ? adaptTemplateContext(value, context, typescript) : value.text();
+  if (text === null) return null;
   const strings = new Set(name ? [name.text()] : []);
+  if (context) for (const property of ["resource", "resourcePath", "resourceQuery", "resourceFragment", "context"]) strings.add(`${context.text()}.${property}`);
   const body = value.field("body");
   if (!body) return null;
-  if (body.kind() !== "statement_block") return returnsString(body, strings) ? value.text() : null;
+  if (body.kind() !== "statement_block") return returnsString(body, strings) ? text : null;
   const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
   const last = statements.pop();
   if (last?.kind() !== "return_statement") return null;
   for (const statement of statements) {
+    const expression = statement.kind() === "expression_statement" ? namedChildren(statement)[0] : undefined;
+    const callee = expression?.kind() === "call_expression" ? expression.field("function") : undefined;
+    if (context && callee?.kind() === "member_expression" && callee.field("object")?.text() === context.text() && CONTEXT_METHODS.has(callee.field("property")?.text() ?? "")) continue;
     if (statement.kind() !== "lexical_declaration" || !statement.text().startsWith("const ")) return null;
     for (const declaration of namedChildren(statement).filter((node) => node.kind() !== "comment")) {
       const binding = declaration.field("name");
@@ -176,5 +225,5 @@ export function nativeTemplate(value: SgNode<Js>): string | null {
       strings.add(binding.text());
     }
   }
-  return returnsString(namedChildren(last).find((node) => node.kind() !== "comment") ?? null, strings) ? value.text() : null;
+  return returnsString(namedChildren(last).find((node) => node.kind() !== "comment") ?? null, strings) ? text : null;
 }
