@@ -182,12 +182,15 @@ class HtmlMigration {
       else if (name === "loader") loaderPairs.push(pair);
       else if (name === "plugins") pluginsPairs.push(pair);
     }
-    // Native favicon links do not generate image variants or replace the
-    // companion's html-webpack-plugin hooks. Preserve the owning config.
+    // Dynamic favicon inputs need manual migration. Keep their HTML plugin
+    // too, because the companion relies on its hooks.
     for (const pair of pluginsPairs) {
       const value = unwrapFilterCall(pair.field("value") ?? pair);
       if (value.kind() !== "array") continue;
-      if (namedChildren(value).some((element) => this.siblingInstantiationOf(element)?.module === FAVICONS_MODULE)) {
+      if (namedChildren(value).some((element) => {
+        const sibling = this.siblingInstantiationOf(element);
+        return sibling?.module === FAVICONS_MODULE && !this.faviconLogo(sibling.instantiation);
+      })) {
         const config = pair.parent();
         if (config) this.blockedConfigs.add(config.range().start.index);
         this.pluginRetained = true;
@@ -599,6 +602,17 @@ class HtmlMigration {
 
   // ---------- companion plugins ----------
 
+  private faviconLogo(instantiation: SgNode<Js>): SgNode<Js> | null {
+    const argsNode = instantiation.field("arguments");
+    const args = argsNode ? namedChildren(argsNode).filter((node) => node.kind() !== "comment") : [];
+    if (args.length !== 1) return null;
+    const option = args[0];
+    if (option.kind() === "string") return option;
+    if (option.kind() !== "object" || namedChildren(option).some((node) => node.kind() !== "pair" && node.kind() !== "comment")) return null;
+    const logo = findPair(option, "logo")?.field("value");
+    return logo?.kind() === "string" ? logo : null;
+  }
+
   // Named bindings (`import { X }` / `const { X } = require(...)`) — e.g.
   // webpack-subresource-integrity's named export, which the default-import
   // resolution doesn't cover. Only single-name patterns, so removing the
@@ -722,6 +736,16 @@ class HtmlMigration {
         }
       }
       if (enabled) props.push({ name: "integrity", valueText: integrity });
+    } else if (module === FAVICONS_MODULE) {
+      const logo = this.faviconLogo(instantiation);
+      if (!logo) return false;
+      props.push({ name: "favicon", valueText: logo.text() });
+      if (args[0]?.kind() === "object") {
+        for (const pair of pairsOf(args[0])) {
+          if (keyName(pair) !== "logo") lost.push(keyName(pair) ?? "options");
+        }
+      }
+      plan.commentLines.push("Review: native favicon emits the source icon only; generate the required icon sizes/formats and web app manifest manually, then configure their links in output.html or the HTML template");
     } else return false;
     for (const prop of props) {
       if (mode === "multi") {
@@ -736,7 +760,7 @@ class HtmlMigration {
     }
     if (lost.length) {
       plan.commentLines.push(
-        `Removed ${module} options without a native HTML equivalent: ${[...new Set(lost)].join(", ")}`,
+        `Removed ${module === FAVICONS_MODULE ? "favicon generator" : module} options without a native HTML equivalent: ${[...new Set(lost)].join(", ")}`,
       );
     }
     return true;

@@ -46,6 +46,10 @@ test("workflow applies HTML and dependency edits through the runner, without fs 
     assert.equal(rootManifest.devDependencies["html-loader"], undefined);
     const migrated = JSON.parse(readFileSync(path.join(target, "packages/migrated/package.json"), "utf8"));
     assert.equal(migrated.devDependencies["html-webpack-plugin"], undefined);
+    assert.equal(migrated.devDependencies["favicons-webpack-plugin"], undefined);
+    const faviconConfig = readFileSync(path.join(target, "packages/migrated/webpack.config.cjs"), "utf8");
+    assert.match(faviconConfig, /favicon: "\.\/logo.png"/);
+    assert.match(faviconConfig, /generate the required icon sizes\/formats and web app manifest manually/);
     const skipped = "packages/skipped/webpack.config.cjs";
     assert.deepEqual(readFileSync(path.join(target, skipped)), readFileSync(path.join(fixture, skipped)));
 
