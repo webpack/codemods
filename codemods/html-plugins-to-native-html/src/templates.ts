@@ -36,19 +36,19 @@ export function addTemplateScripts(root: SgRoot<Html>, scripts: TemplateScript[]
   }
   const existing = new Set<string>();
   for (const script of node.findAll({ rule: { kind: "script_element" } })) {
-    const start = script.children().find((child) => child.kind() === "start_tag");
+    const start = script.children().find((child) => child.is("start_tag"));
     for (const attribute of start?.children() ?? []) {
-      if (attribute.kind() !== "attribute") continue;
-      const name = attribute.children().find((child) => child.kind() === "attribute_name");
+      if (!attribute.is("attribute")) continue;
+      const name = attribute.children().find((child) => child.is("attribute_name"));
       if (name?.text().toLowerCase() !== "src") continue;
-      const value = attribute.children().find((child) => child.kind() === "quoted_attribute_value" || child.kind() === "attribute_value");
+      const value = attribute.children().find((child) => child.is("quoted_attribute_value") || child.is("attribute_value"));
       if (!value) continue;
       const key = normalizeFilename(value.text().replace(/^["']|["']$/g, ""));
       existing.add(key);
       const chunkName = requested.get(key)?.chunkName;
       const previous = script.prev();
       // A new comment would override existing webpackIgnore/Preload/etc.
-      if (!chunkName || (previous?.kind() === "comment" && /\bwebpack\w+\s*:/.test(previous.text()))) continue;
+      if (!chunkName || (previous?.is("comment") && /\bwebpack\w+\s*:/.test(previous.text()))) continue;
       const position = script.range().start.index;
       const indent = source.slice(source.lastIndexOf("\n", position - 1) + 1, position);
       const separator = /^[ \t]*$/.test(indent) ? `${eol}${indent}` : " ";

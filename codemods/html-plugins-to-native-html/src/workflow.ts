@@ -83,12 +83,12 @@ function dedupeProps(props: HtmlProp[]): HtmlProp[] {
 }
 
 function isRequireOf(node: SgNode<Js>, moduleName: string): boolean {
-  if (node.kind() !== "call_expression") return false;
+  if (!node.is("call_expression")) return false;
   const callee = node.field("function");
-  if (!callee || callee.kind() !== "identifier" || callee.text() !== "require") return false;
+  if (!callee || !callee.is("identifier") || callee.text() !== "require") return false;
   const argumentsNode = node.field("arguments");
   const args = argumentsNode ? namedChildren(argumentsNode) : [];
-  return args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === moduleName;
+  return args.length === 1 && args[0].is("string") && unquote(args[0].text()) === moduleName;
 }
 
 // Everything one plugin instance contributes to its enclosing config.
@@ -189,7 +189,7 @@ class HtmlMigration {
     // too, because the companion relies on its hooks.
     for (const pair of pluginsPairs) {
       const value = unwrapFilterCall(pair.field("value") ?? pair);
-      if (value.kind() !== "array") continue;
+      if (!value.is("array")) continue;
       if (namedChildren(value).some((element) => {
         const sibling = this.siblingInstantiationOf(element);
         return sibling?.module === FAVICONS_MODULE && !this.faviconLogo(sibling.instantiation);
@@ -239,17 +239,17 @@ class HtmlMigration {
     for (const receiver of this.pluginHookReceivers()) {
       const call = receiver.parent();
       const access = call?.parent();
-      if (access?.kind() === "member_expression") {
+      if (access?.is("member_expression")) {
         const property = access.field("property");
         if (property) properties.push(property);
-      } else if (access?.kind() === "variable_declarator") {
+      } else if (access?.is("variable_declarator")) {
         const name = access.field("name");
-        if (name?.kind() === "object_pattern") {
+        if (name?.is("object_pattern")) {
           for (const member of namedChildren(name)) {
-            const key = member.kind() === "pair_pattern" ? member.field("key") : member;
+            const key = member.is("pair_pattern") ? member.field("key") : member;
             if (key) properties.push(key);
           }
-        } else if (name?.kind() === "identifier") {
+        } else if (name?.is("identifier")) {
           for (const member of this.editor.rootNode.findAll({ rule: { kind: "member_expression" } })) {
             if (member.field("object")?.text() !== name.text()) continue;
             const property = member.field("property");
@@ -303,9 +303,9 @@ class HtmlMigration {
     // ESM output is stable since webpack 5.111. Remove the obsolete flag
     // only when its value is a literal, preserving any expression side effects.
     const experiments = findPair(plan.config, "experiments")?.field("value");
-    const flag = experiments?.kind() === "object" ? findPair(experiments, "outputModule") : undefined;
+    const flag = experiments?.is("object") ? findPair(experiments, "outputModule") : undefined;
     const value = flag?.field("value");
-    if (flag && (value?.kind() === "true" || value?.kind() === "false")) {
+    if (flag && (value?.is("true") || value?.is("false"))) {
       this.editor.keepBracesOpen(experiments!);
       this.editor.markForRemoval(flag);
     }
@@ -330,20 +330,20 @@ class HtmlMigration {
       for (const branch of branches) this.collectLoaderFindings(branch, findings);
       return;
     }
-    if (node.kind() !== "object" || loaderNameOf(node) !== LOADER_NAME) return;
+    if (!node.is("object") || loaderNameOf(node) !== LOADER_NAME) return;
     const optionsValue = findPair(node, "options")?.field("value");
     const minification = collectMinification(
-      optionsValue?.kind() === "object" ? findPair(optionsValue, "minimize")?.field("value") : undefined,
+      optionsValue?.is("object") ? findPair(optionsValue, "minimize")?.field("value") : undefined,
       `${LOADER_NAME}.minimize`,
     );
     findings.minification.push(minification);
     if (minification.lost.length) findings.supported = false;
     if (!optionsValue) return;
-    if (optionsValue.kind() !== "object") {
+    if (!optionsValue.is("object")) {
       findings.supported = false;
       return;
     }
-    if (namedChildren(optionsValue).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) {
+    if (namedChildren(optionsValue).some((child) => !child.is("pair") && !child.is("comment"))) {
       findings.supported = false;
       return;
     }
@@ -353,7 +353,7 @@ class HtmlMigration {
       if (name === "esModule") {
         // Native HTML exposes a default string export and its CJS shim also
         // returns that string directly, so both literal settings can migrate.
-        if (value?.kind() !== "true" && value?.kind() !== "false") findings.supported = false;
+        if (!value?.is("true") && !value?.is("false")) findings.supported = false;
         continue;
       }
       if (name === "minimize") continue;
@@ -382,7 +382,7 @@ class HtmlMigration {
   // tool's config (Storybook, craco, …).
   private isWebpackRuleContext(pair: SgNode<Js>, arrayNode: SgNode<Js>): boolean {
     const owner = arrayNode.parent();
-    if (owner && owner.kind() === "pair") {
+    if (owner && owner.is("pair")) {
       const name = keyName(owner);
       if (name === "rules" || name === "oneOf") return true;
     }
@@ -398,13 +398,13 @@ class HtmlMigration {
       const originalValue = pair.field("value");
       if (!originalValue) continue;
       const value = unwrapFilterCall(originalValue);
-      const elements = value.kind() === "array" ? namedChildren(value) : [value];
+      const elements = value.is("array") ? namedChildren(value) : [value];
       if (!elements.length) continue;
       // Any other loader (template compilers, custom ones) stays in front.
       const kept = elements.filter((element) => !this.isRemovableUseElement(element));
       if (kept.length === elements.length) continue;
       const ruleObject = pair.parent();
-      if (!ruleObject || ruleObject.kind() !== "object") continue;
+      if (!ruleObject || !ruleObject.is("object")) continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
       const findings: LoaderFindings = { supported: true, sourceDefaults: false, parserProps: [], minification: [] };
       for (const element of elements) this.collectLoaderFindings(element, findings);
@@ -425,7 +425,7 @@ class HtmlMigration {
     // Rule-level `loader:`/`options:` shorthand.
     for (const pair of loaderPairs) {
       const ruleObject = pair.parent();
-      if (!ruleObject || ruleObject.kind() !== "object") continue;
+      if (!ruleObject || !ruleObject.is("object")) continue;
       if (!findPair(ruleObject, "test") || findPair(ruleObject, "use")) continue;
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
@@ -466,13 +466,13 @@ class HtmlMigration {
     const experiments = config && findPair(config, "experiments")?.field("value");
     const parser = findPair(swap.ruleObject, "parser")?.field("value");
     if (
-      (experiments && experiments.kind() !== "object") ||
-      (swap.findings.parserProps.length && parser && parser.kind() !== "object")
+      (experiments && !experiments.is("object")) ||
+      (swap.findings.parserProps.length && parser && !parser.is("object"))
     ) return false;
     // Do not replace loader behavior with a conflicting existing parser option,
     // or flatten differently configured loader branches into one parser.
     for (const prop of swap.findings.parserProps) {
-      const existing = parser?.kind() === "object" ? findPair(parser, prop.name)?.field("value") : undefined;
+      const existing = parser?.is("object") ? findPair(parser, prop.name)?.field("value") : undefined;
       if (existing && existing.text() !== prop.valueText) return false;
       if (swap.findings.parserProps.some((other) => other.name === prop.name && other.valueText !== prop.valueText)) return false;
     }
@@ -520,7 +520,7 @@ class HtmlMigration {
     replacement += `type: "html"`;
     if (typePair) this.editor.markForRemoval(typePair);
     if (swap.findings.parserProps.length) {
-      if (parser?.kind() === "object") {
+      if (parser?.is("object")) {
         const missing = swap.findings.parserProps.filter((prop) => !findPair(parser, prop.name));
         if (missing.length) {
           this.editor.insertIntoObject(parser, () => missing.map((prop) => `${prop.name}: ${prop.valueText}`));
@@ -549,13 +549,13 @@ class HtmlMigration {
       }
       return null;
     }
-    if (element.kind() !== "new_expression") return null;
+    if (!element.is("new_expression")) return null;
     const constructorNode = element.field("constructor");
     if (!constructorNode) return null;
     if (this.pluginNames.has(constructorNode.text())) return element;
     // `new (require("html-webpack-plugin"))(...)` without a binding.
     const inner =
-      constructorNode.kind() === "parenthesized_expression"
+      constructorNode.is("parenthesized_expression")
         ? (namedChildren(constructorNode)[0] ?? constructorNode)
         : constructorNode;
     return isRequireOf(inner, PLUGIN_MODULE) ? element : null;
@@ -563,10 +563,10 @@ class HtmlMigration {
 
   private transformPluginsPair(pluginsPair: SgNode<Js>): void {
     const configObject = pluginsPair.parent();
-    if (!configObject || configObject.kind() !== "object") return;
+    if (!configObject || !configObject.is("object")) return;
     if (this.blockedConfigs.has(configObject.range().start.index)) return;
     const value = unwrapFilterCall(pluginsPair.field("value") ?? pluginsPair);
-    if (value.kind() !== "array") return;
+    if (!value.is("array")) return;
     const elements = namedChildren(value);
     const instances: { element: SgNode<Js>; instantiation: SgNode<Js> }[] = [];
     for (const element of elements) {
@@ -577,7 +577,7 @@ class HtmlMigration {
     // A computed destination cannot safely receive the native settings.
     if (["output", "experiments"].some((key) => {
       const destination = findPair(configObject, key)?.field("value");
-      return destination && destination.kind() !== "object";
+      return destination && !destination.is("object");
     })) {
       this.pluginRetained = true;
       return;
@@ -588,15 +588,15 @@ class HtmlMigration {
       const argumentsNode = instantiation.field("arguments");
       const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
       if (optionsObject && (
-        optionsObject.kind() !== "object" ||
-        namedChildren(optionsObject).some((child) => child.kind() !== "pair" && child.kind() !== "comment")
+        !optionsObject.is("object") ||
+        namedChildren(optionsObject).some((child) => !child.is("pair") && !child.is("comment"))
       )) {
         this.pluginRetained = true;
         return;
       }
       const template = optionsObject && findPair(optionsObject, "template")?.field("value");
       const entry = findPair(configObject, "entry")?.field("value");
-      if (template && (template.kind() !== "string" || (entry && !this.replaceableEntryValue(entry)))) {
+      if (template && (!template.is("string") || (entry && !this.replaceableEntryValue(entry)))) {
         this.pluginRetained = true;
         return;
       }
@@ -608,7 +608,7 @@ class HtmlMigration {
     const chunkRestricted =
       instances.length > 1 ||
       (firstOptions !== undefined &&
-        findPair(firstOptions, "chunks")?.field("value")?.kind() === "array");
+        findPair(firstOptions, "chunks")?.field("value")?.is("array"));
     if (chunkRestricted) {
       this.migrateMultiPage(configObject, pluginsPair, elements, instances, optionObjects);
       return;
@@ -640,13 +640,13 @@ class HtmlMigration {
 
   private faviconLogo(instantiation: SgNode<Js>): SgNode<Js> | null {
     const argsNode = instantiation.field("arguments");
-    const args = argsNode ? namedChildren(argsNode).filter((node) => node.kind() !== "comment") : [];
+    const args = argsNode ? namedChildren(argsNode).filter((node) => !node.is("comment")) : [];
     if (args.length !== 1) return null;
     const option = args[0];
-    if (option.kind() === "string") return option;
-    if (option.kind() !== "object" || namedChildren(option).some((node) => node.kind() !== "pair" && node.kind() !== "comment")) return null;
+    if (option.is("string")) return option;
+    if (!option.is("object") || namedChildren(option).some((node) => !node.is("pair") && !node.is("comment"))) return null;
     const logo = findPair(option, "logo")?.field("value");
-    return logo?.kind() === "string" ? logo : null;
+    return logo?.is("string") ? logo : null;
   }
 
   // Named bindings (`import { X }` / `const { X } = require(...)`) — e.g.
@@ -666,19 +666,19 @@ class HtmlMigration {
     for (const kind of ["lexical_declaration", "variable_declaration"] as const) {
       for (const statement of this.editor.rootNode.findAll({ rule: { kind } })) {
         const declarators = namedChildren(statement).filter(
-          (child) => child.kind() === "variable_declarator",
+          (child) => child.is("variable_declarator"),
         );
         if (declarators.length !== 1) continue;
         const pattern = declarators[0].field("name");
         const valueNode = declarators[0].field("value");
-        if (!pattern || pattern.kind() !== "object_pattern") continue;
+        if (!pattern || !pattern.is("object_pattern")) continue;
         if (!valueNode || !isRequireOf(valueNode, moduleName)) continue;
         const properties = namedChildren(pattern);
         if (properties.length !== 1) continue;
         const property = properties[0];
-        if (property.kind() === "shorthand_property_identifier_pattern") {
+        if (property.is("shorthand_property_identifier_pattern")) {
           bindings.push({ name: property.text(), statement });
-        } else if (property.kind() === "pair_pattern") {
+        } else if (property.is("pair_pattern")) {
           const local = property.field("value");
           if (local) bindings.push({ name: local.text(), statement });
         }
@@ -698,10 +698,10 @@ class HtmlMigration {
       }
       return null;
     }
-    if (element.kind() !== "new_expression") return null;
+    if (!element.is("new_expression")) return null;
     const constructorNode = element.field("constructor");
     if (!constructorNode) return null;
-    const inner = constructorNode.kind() === "parenthesized_expression"
+    const inner = constructorNode.is("parenthesized_expression")
       ? namedChildren(constructorNode)[0] : constructorNode;
     const module = this.siblingNameToModule.get(constructorNode.text())
       ?? SIBLING_PLUGIN_MODULES.find((name) => inner && isRequireOf(inner, name));
@@ -747,11 +747,11 @@ class HtmlMigration {
     if (module === CSP_MODULE) {
       const policy = args[0];
       if (!policy) props.push({ name: "csp", valueText: "true" });
-      else if (policy.kind() === "object") {
+      else if (policy.is("object")) {
         props.push({ name: "csp", valueText: `{ policy: ${policy.text()} }` });
       } else return false;
       const options = args[1];
-      if (options && options.kind() === "object") {
+      if (options && options.is("object")) {
         for (const optionPair of pairsOf(options)) lost.push(keyName(optionPair) ?? "options");
       } else if (options) {
         lost.push("options");
@@ -760,13 +760,13 @@ class HtmlMigration {
       let integrity = "true";
       let enabled = true;
       const options = args[0];
-      if (options && options.kind() !== "object") return false;
+      if (options && !options.is("object")) return false;
       if (options) {
         for (const optionPair of pairsOf(options)) {
           const name = keyName(optionPair);
           const value = optionPair.field("value");
-          if (name === "hashFuncNames" && value?.kind() === "array") integrity = value.text();
-          else if (name === "enabled" && value?.kind() === "false") enabled = false;
+          if (name === "hashFuncNames" && value?.is("array")) integrity = value.text();
+          else if (name === "enabled" && value?.is("false")) enabled = false;
           else if (name === "enabled") continue;
           else lost.push(name ?? "options");
         }
@@ -776,7 +776,7 @@ class HtmlMigration {
       const logo = this.faviconLogo(instantiation);
       if (!logo) return false;
       props.push({ name: "favicon", valueText: logo.text() });
-      if (args[0]?.kind() === "object") {
+      if (args[0]?.is("object")) {
         for (const pair of pairsOf(args[0])) {
           if (keyName(pair) !== "logo") lost.push(keyName(pair) ?? "options");
         }
@@ -813,7 +813,7 @@ class HtmlMigration {
     optionObjects: (SgNode<Js> | undefined)[],
   ): void {
     const entryValue = findPair(configObject, "entry")?.field("value");
-    if (!entryValue || entryValue.kind() !== "object") {
+    if (!entryValue || !entryValue.is("object")) {
       this.pluginRetained = true;
       return;
     }
@@ -825,8 +825,8 @@ class HtmlMigration {
     for (const options of optionObjects) {
       // Each page needs exactly one owning entry in `chunks`.
       const chunksValue = options ? findPair(options, "chunks")?.field("value") : undefined;
-      const chunkNames = chunksValue?.kind() === "array" ? namedChildren(chunksValue) : [];
-      if (!options || chunkNames.length !== 1 || chunkNames[0].kind() !== "string") {
+      const chunkNames = chunksValue?.is("array") ? namedChildren(chunksValue) : [];
+      if (!options || chunkNames.length !== 1 || !chunkNames[0].is("string")) {
         this.pluginRetained = true;
         return;
       }
@@ -845,7 +845,7 @@ class HtmlMigration {
       // The page filename must fit the shared `htmlFilename: "[name].html"`.
       const filenameValue = findPair(options, "filename")?.field("value");
       if (filenameValue) {
-        const filename = filenameValue.kind() === "string" ? unquote(filenameValue.text()) : null;
+        const filename = filenameValue.is("string") ? unquote(filenameValue.text()) : null;
         if (filename !== `${chunkName}.html` && filename !== "[name].html") {
           lost.push(`filename "${filename ?? "?"}" (output.htmlFilename is "[name].html")`);
         }
@@ -875,7 +875,7 @@ class HtmlMigration {
     ]);
     for (const page of pages) {
       const node = page.entryDescriptor;
-      if (node.kind() === "object") {
+      if (node.is("object")) {
         if (!findPair(node, "html")) {
           this.editor.insertIntoObject(node, () => [`html: ${page.htmlValue}`]);
         }
@@ -913,7 +913,7 @@ class HtmlMigration {
     for (const property of this.pluginHookProperties()) {
       const renamed = HOOK_RENAMES.get(property.text());
       if (!renamed) continue;
-      this.editor.replace(property, property.kind() === "shorthand_property_identifier_pattern"
+      this.editor.replace(property, property.is("shorthand_property_identifier_pattern")
         ? `${renamed}: ${property.text()}` : renamed);
       const statement = this.statementOf(property);
       const review = HOOK_REVIEW_COMMENTS.get(renamed);
@@ -944,8 +944,7 @@ class HtmlMigration {
     while (current) {
       const parent: SgNode<Js> | null = current.parent();
       if (!parent) return null;
-      const kind = parent.kind();
-      if (kind === "statement_block" || kind === "program" || kind === "class_body") {
+      if (parent.is("statement_block") || parent.is("program") || parent.is("class_body")) {
         return current;
       }
       current = parent;
@@ -961,7 +960,7 @@ class HtmlMigration {
     if (webpackBindings.length) return `${webpackBindings[0].name}.html.HtmlModulesPlugin`;
     const binding = this.pluginBindings[0];
     if (binding) {
-      const isEsm = binding.statement.kind() === "import_statement";
+      const isEsm = binding.statement.is("import_statement");
       this.editor.replace(
         binding.statement,
         isEsm ? 'import { html } from "webpack";' : 'const { html } = require("webpack");',
@@ -1002,7 +1001,7 @@ class HtmlMigration {
     const templateValue = findPair(optionsObject, "template")?.field("value");
     const templateMode = Boolean(templateValue);
     if (templateValue) {
-      if (templateValue.kind() === "string") findings.templateValue = templateValue.text();
+      if (templateValue.is("string")) findings.templateValue = templateValue.text();
       else findings.lost.push("template");
     }
     for (const optionPair of pairsOf(optionsObject)) {
@@ -1025,7 +1024,7 @@ class HtmlMigration {
     templateMode: boolean,
     findings: InstanceFindings,
   ): void {
-    const literal = value.kind() === "string" ? unquote(value.text()) : null;
+    const literal = value.is("string") ? unquote(value.text()) : null;
     // Head tags are only injected into webpack-generated pages, never into an
     // authored template — there the tag belongs in the template itself.
     if (HEAD_TAG_OPTIONS.has(name) && templateMode) {
@@ -1034,7 +1033,7 @@ class HtmlMigration {
     }
     switch (name) {
       case "filename":
-        if (value.kind() === "string") findings.htmlFilename = value.text();
+        if (value.is("string")) findings.htmlFilename = value.text();
         else findings.lost.push(this.describeLost(name));
         break;
       case "title":
@@ -1047,11 +1046,11 @@ class HtmlMigration {
         break;
       case "inject":
         // `true` is the native default placement; the template authors its own tags.
-        if (templateMode || value.kind() === "true") break;
-        if (value.kind() === "false" || literal === "body" || literal === "head") {
+        if (templateMode || value.is("true")) break;
+        if (value.is("false") || literal === "body" || literal === "head") {
           findings.htmlProps.push({
             name,
-            valueText: value.kind() === "false" ? "false" : `"${literal}"`,
+            valueText: value.is("false") ? "false" : `"${literal}"`,
           });
         } else {
           findings.lost.push(this.describeLost(name));
@@ -1085,7 +1084,7 @@ class HtmlMigration {
         break;
       case "hash":
       case "xhtml":
-        if (value.kind() !== "false") findings.lost.push(this.describeLost(name));
+        if (!value.is("false")) findings.lost.push(this.describeLost(name));
         break;
       default:
         findings.lost.push(this.describeLost(name));
@@ -1096,7 +1095,7 @@ class HtmlMigration {
   // property, content }` objects (native keys `og:*` use `property` on their
   // own); anything else — extra attributes, `http-equiv` — is flagged per key.
   private collectMetaOption(value: SgNode<Js>, findings: InstanceFindings): void {
-    if (value.kind() !== "object") {
+    if (!value.is("object")) {
       findings.lost.push("meta");
       return;
     }
@@ -1108,11 +1107,11 @@ class HtmlMigration {
         findings.lost.push("meta");
         continue;
       }
-      if (metaValue.kind() === "string") {
+      if (metaValue.is("string")) {
         parts.push(metaPair.text());
         continue;
       }
-      if (metaValue.kind() === "object") {
+      if (metaValue.is("object")) {
         const nameValue = (findPair(metaValue, "name") ?? findPair(metaValue, "property"))?.field(
           "value",
         );
@@ -1120,7 +1119,7 @@ class HtmlMigration {
         const extraKeys = pairsOf(metaValue)
           .map((pair) => keyName(pair))
           .filter((key) => key !== "name" && key !== "property" && key !== "content");
-        if (nameValue?.kind() === "string" && contentValue && !extraKeys.length) {
+        if (nameValue?.is("string") && contentValue && !extraKeys.length) {
           parts.push(`"${unquote(nameValue.text())}": ${contentValue.text()}`);
           continue;
         }
@@ -1138,7 +1137,7 @@ class HtmlMigration {
   // single page referencing every chunk — worth a note on multi-entry configs.
   private noteMultiPageEntry(configObject: SgNode<Js>, findings: InstanceFindings): void {
     const entryValue = findPair(configObject, "entry")?.field("value");
-    if (entryValue && entryValue.kind() === "object" && pairsOf(entryValue).length > 1) {
+    if (entryValue && entryValue.is("object") && pairsOf(entryValue).length > 1) {
       findings.notes.push(
         "output.html emits one page per entry; html-webpack-plugin emitted a single page with every chunk",
       );
@@ -1167,7 +1166,7 @@ class HtmlMigration {
       findings.lost.push("template (make the template an .html entry that loads your JS)");
       return;
     }
-    const chunkName = entryValue?.kind() === "object" ? keyName(pairsOf(entryValue)[0]) ?? "main" : "main";
+    const chunkName = entryValue?.is("object") ? keyName(pairsOf(entryValue)[0]) ?? "main" : "main";
     const injected = queueTemplate(this.configFileName, unquote(templateValue), unquote(replaceable.text()), chunkName);
     const comment = injected
       ? `The template is now the entry: it must load the previous entry via ${templateScriptTag({ src: injected, chunkName })} (added by the HTML workflow step when the template is included)`
@@ -1189,19 +1188,19 @@ class HtmlMigration {
   // A string entry value the template path can take over: the value itself, a
   // single-element array, or a single-key object's string value.
   private replaceableEntryValue(entryValue: SgNode<Js>): SgNode<Js> | null {
-    if (entryValue.kind() === "string") return entryValue;
-    if (entryValue.kind() === "array") {
+    if (entryValue.is("string")) return entryValue;
+    if (entryValue.is("array")) {
       const elements = namedChildren(entryValue);
-      return elements.length === 1 && elements[0].kind() === "string" ? elements[0] : null;
+      return elements.length === 1 && elements[0].is("string") ? elements[0] : null;
     }
-    if (entryValue.kind() === "object") {
+    if (entryValue.is("object")) {
       const entryPairs = pairsOf(entryValue);
       if (entryPairs.length !== 1) return null;
-      if (namedChildren(entryValue).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) return null;
+      if (namedChildren(entryValue).some((child) => !child.is("pair") && !child.is("comment"))) return null;
       const key = entryPairs[0].field("key");
-      if (!key || key.kind() === "computed_property_name" || key.text().includes("\\")) return null;
+      if (!key || key.is("computed_property_name") || key.text().includes("\\")) return null;
       const inner = entryPairs[0].field("value");
-      return inner && inner.kind() === "string" ? inner : null;
+      return inner && inner.is("string") ? inner : null;
     }
     return null;
   }
@@ -1213,13 +1212,13 @@ class HtmlMigration {
     for (const name of ["module", "parser", "html"]) {
       const value = findPair(current, name)?.field("value");
       if (!value) return true;
-      if (value.kind() !== "object" || namedChildren(value).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) return false;
+      if (!value.is("object") || namedChildren(value).some((child) => !child.is("pair") && !child.is("comment"))) return false;
       current = value;
     }
     const sources = findPair(current, "sources")?.field("value");
-    if (!sources || sources.kind() === "true") return true;
-    const elements = sources.kind() === "array" ? namedChildren(sources).filter((node) => node.kind() !== "comment") : [];
-    return elements.length === 1 && elements[0].kind() === "string" && unquote(elements[0].text()) === "...";
+    if (!sources || sources.is("true")) return true;
+    const elements = sources.is("array") ? namedChildren(sources).filter((node) => !node.is("comment")) : [];
+    return elements.length === 1 && elements[0].is("string") && unquote(elements[0].text()) === "...";
   }
 
   private normalizeSourceDefaults(config: SgNode<Js>): void {
@@ -1239,7 +1238,7 @@ class HtmlMigration {
       current = value;
     }
     const sources = findPair(current, "sources")?.field("value");
-    if (sources?.kind() === "true") this.editor.replace(sources, '["..."]');
+    if (sources?.is("true")) this.editor.replace(sources, '["..."]');
     else if (!sources) this.editor.insertIntoObject(current, () => ['sources: ["..."]']);
   }
 
@@ -1277,9 +1276,9 @@ class HtmlMigration {
       const outputProps: HtmlProp[] = [];
       const htmlProps = dedupeProps(plan.htmlProps);
       const existingOutput = findPair(plan.config, "output")?.field("value");
-      const existingHtml = existingOutput?.kind() === "object"
+      const existingHtml = existingOutput?.is("object")
         ? findPair(existingOutput, "html")?.field("value") : undefined;
-      if (existingHtml?.kind() === "object") {
+      if (existingHtml?.is("object")) {
         const missing = htmlProps.filter((prop) => !findPair(existingHtml, prop.name));
         if (missing.length) {
           this.editor.insertIntoObject(existingHtml, () => missing.map((prop) => `${prop.name}: ${prop.valueText}`));
@@ -1350,14 +1349,14 @@ class HtmlMigration {
       return `${commentLines.map((line) => `// ${line}\n${indent}`).join("")}${propertyText}`;
     };
     const value = findPair(config, key)?.field("value");
-    if (value && value.kind() === "object") {
+    if (value && value.is("object")) {
       for (const prop of props) {
         const existing = findPair(value, prop.name)?.field("value");
         if (!existing) continue;
         if (
           (key === "experiments" && prop.name === "html") ||
           (key === "output" && prop.name === "module") ||
-          (key === "output" && prop.name === "html" && (existing.kind() === "false" || existing.kind() === "true"))
+          (key === "output" && prop.name === "html" && (existing.is("false") || existing.is("true")))
         ) {
           this.editor.replace(existing, prop.valueText);
         }

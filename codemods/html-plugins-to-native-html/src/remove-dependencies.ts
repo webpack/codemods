@@ -13,7 +13,7 @@ export function removeUnusedDependencies(root: SgRoot<Json>, remaining: Set<stri
   const rootNode = root.root() as unknown as SgNode<Js>;
   const editor = new ConfigEditor(rootNode);
   const manifest = namedChildren(rootNode)[0];
-  if (!manifest || manifest.kind() !== "object") return null;
+  if (!manifest || !manifest.is("object")) return null;
   if (!remaining) return null;
   // Scripts and other manifest fields can invoke these packages as well.
   for (const pair of pairsOf(manifest)) {
@@ -24,7 +24,7 @@ export function removeUnusedDependencies(root: SgRoot<Json>, remaining: Set<stri
   }
   for (const key of DEPENDENCY_KEYS) {
     const value = findPair(manifest, key)?.field("value");
-    if (!value || value.kind() !== "object") continue;
+    if (!value || !value.is("object")) continue;
     for (const pair of pairsOf(value)) {
       const name = keyName(pair);
       if (name && REMOVED_PACKAGES.has(name) && !remaining.has(name)) editor.markForRemoval(pair);

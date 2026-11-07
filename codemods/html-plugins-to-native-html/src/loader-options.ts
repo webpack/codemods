@@ -3,27 +3,27 @@ import type { SgNode } from "@codemod.com/jssg-types/main";
 import { findPair, keyName, namedChildren, unquote } from "@webpack/codemod-utils";
 
 function callbackParameters(value: SgNode<Js>): SgNode<Js>[] | null {
-  if (!["arrow_function", "function_expression"].includes(value.kind())) return null;
-  if (value.children().some((node) => node.kind() === "async")) return null;
+  if (!["arrow_function", "function_expression"].some((kind) => value.is(kind))) return null;
+  if (value.children().some((node) => node.is("async"))) return null;
   if (value.findAll({ rule: { any: [{ kind: "this" }, { pattern: "arguments" }] } }).length) return null;
   const parameters = value.field("parameters");
   const parameter = value.field("parameter");
-  const params = parameters ? namedChildren(parameters).filter((node) => node.kind() !== "comment") : parameter ? [parameter] : [];
-  if (params.some((param) => param.field("value") || param.kind() === "assignment_pattern" || param.kind() === "rest_pattern")) return null;
+  const params = parameters ? namedChildren(parameters).filter((node) => !node.is("comment")) : parameter ? [parameter] : [];
+  if (params.some((param) => param.field("value") || param.is("assignment_pattern") || param.is("rest_pattern"))) return null;
   const names = params.map((param) => param.field("pattern") ?? param);
-  return names.every((name) => name.kind() === "identifier") ? names : null;
+  return names.every((name) => name.is("identifier")) ? names : null;
 }
 
 export function isIdentityCallback(value: SgNode<Js>): boolean {
   const params = callbackParameters(value);
   if (!params?.length) return false;
   let body = value.field("body");
-  if (body?.kind() === "statement_block") {
-    const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
-    if (statements.length !== 1 || statements[0].kind() !== "return_statement") return false;
-    body = namedChildren(statements[0]).find((node) => node.kind() !== "comment") ?? null;
+  if (body?.is("statement_block")) {
+    const statements = namedChildren(body).filter((node) => !node.is("comment"));
+    if (statements.length !== 1 || !statements[0].is("return_statement")) return false;
+    body = namedChildren(statements[0]).find((node) => !node.is("comment")) ?? null;
   }
-  return body?.kind() === "identifier" && body.text() === params[0].text();
+  return !!body?.is("identifier") && body.text() === params[0].text();
 }
 
 function usesParameter(value: SgNode<Js>, params: SgNode<Js>[], index: number): boolean {
@@ -34,12 +34,12 @@ function usesParameter(value: SgNode<Js>, params: SgNode<Js>[], index: number): 
 function constantBoolean(value: SgNode<Js>): string | null {
   if (!callbackParameters(value)) return null;
   let body = value.field("body");
-  if (body?.kind() === "statement_block") {
-    const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
-    if (statements.length !== 1 || statements[0].kind() !== "return_statement") return null;
+  if (body?.is("statement_block")) {
+    const statements = namedChildren(body).filter((node) => !node.is("comment"));
+    if (statements.length !== 1 || !statements[0].is("return_statement")) return null;
     body = namedChildren(statements[0])[0] ?? null;
   }
-  return body?.kind() === "true" || body?.kind() === "false" ? body.text() : null;
+  return body?.is("true") || body?.is("false") ? body.text() : null;
 }
 
 function freshName(source: string, base: string): string {
@@ -60,31 +60,31 @@ function sourceFilter(value: SgNode<Js>, tag: string | null, attribute: string, 
 }
 
 export function nativeSources(value: SgNode<Js>, typescript = false): { text: string; extendsDefaults: boolean } | null {
-  if (value.kind() === "true" || value.kind() === "false") return { text: value.text(), extendsDefaults: false };
-  if (value.kind() !== "object") return null;
-  const options = namedChildren(value).filter((node) => node.kind() !== "comment");
+  if (value.is("true") || value.is("false")) return { text: value.text(), extendsDefaults: false };
+  if (!value.is("object")) return null;
+  const options = namedChildren(value).filter((node) => !node.is("comment"));
   if (!options.length) return { text: "true", extendsDefaults: false };
   const keys = options.map(keyName);
   if (new Set(keys).size !== keys.length || keys.some((key) => !key || !["list", "urlFilter", "scriptingEnabled"].includes(key))) return null;
   const scripting = findPair(value, "scriptingEnabled")?.field("value");
-  if (scripting && scripting.kind() !== "true") return null;
+  if (scripting && !scripting.is("true")) return null;
   const urlFilter = findPair(value, "urlFilter")?.field("value");
   const urlConstant = urlFilter ? constantBoolean(urlFilter) : "true";
   if (urlConstant === "false") return { text: "false", extendsDefaults: false };
   const list = findPair(value, "list")?.field("value");
   if (!list) return urlConstant === "true" ? { text: "true", extendsDefaults: false } : null;
-  if (list.kind() !== "array") return null;
+  if (!list.is("array")) return null;
   const urlParams = urlFilter ? callbackParameters(urlFilter) : [];
   if (urlConstant === null && (!urlParams || urlParams.length > 3 || usesParameter(urlFilter!, urlParams, 2))) return null;
   const edits = [];
   for (const source of namedChildren(list)) {
-    if (source.kind() === "comment") continue;
-    if (source.kind() === "string" && unquote(source.text()) === "...") {
+    if (source.is("comment")) continue;
+    if (source.is("string") && unquote(source.text()) === "...") {
       if (urlConstant === null) return null;
       continue;
     }
-    if (source.kind() !== "object") return null;
-    const properties = namedChildren(source).filter((node) => node.kind() !== "comment");
+    if (!source.is("object")) return null;
+    const properties = namedChildren(source).filter((node) => !node.is("comment"));
     const names = properties.map(keyName);
     if (new Set(names).size !== names.length) return null;
     if (!findPair(source, "attribute") || !findPair(source, "type")) return null;
@@ -94,8 +94,8 @@ export function nativeSources(value: SgNode<Js>, typescript = false): { text: st
       if (!name || !["tag", "attribute", "type", "filter"].includes(name) || !option) return null;
       if (name === "filter") continue;
       if (name === "type") {
-        if (option.kind() !== "string" || !["src", "srcset"].includes(unquote(option.text()))) return null;
-      } else if (option.kind() !== "string") return null;
+        if (!option.is("string") || !["src", "srcset"].includes(unquote(option.text()))) return null;
+      } else if (!option.is("string")) return null;
     }
     const filter = findPair(source, "filter")?.field("value");
     if (!filter && urlConstant === "true") continue;
@@ -128,7 +128,7 @@ export function nativeSources(value: SgNode<Js>, typescript = false): { text: st
   }
   return {
     text: edits.length ? list.commitEdits(edits) : list.text(),
-    extendsDefaults: namedChildren(list).some((node) => node.kind() === "string" && unquote(node.text()) === "..."),
+    extendsDefaults: namedChildren(list).some((node) => node.is("string") && unquote(node.text()) === "..."),
   };
 }
 
@@ -154,7 +154,7 @@ function adaptTemplateContext(value: SgNode<Js>, context: SgNode<Js>, typescript
   const resourcePattern = '/^((?:\\0.|[^?#\\0])*)(\\?(?:\\0.|[^#\\0])*)?(#.*)?$/';
   for (const reference of body.findAll({ rule: { kind: "identifier" } }).filter((node) => node.text() === name)) {
     const member = reference.parent();
-    if (member?.kind() !== "member_expression" || member.field("object")?.range().start.index !== reference.range().start.index) return null;
+    if (!member?.is("member_expression") || member.field("object")?.range().start.index !== reference.range().start.index) return null;
     const property = member.field("property")?.text();
     if (!property) return null;
     if (CONTEXT_METHODS.has(property)) properties.set(property, CONTEXT_METHODS.get(property)!);
@@ -173,7 +173,7 @@ function adaptTemplateContext(value: SgNode<Js>, context: SgNode<Js>, typescript
     } else return null;
   }
   if (typescript) {
-    const parameter = namedChildren(value.field("parameters")!).filter((node) => node.kind() !== "comment")[1];
+    const parameter = namedChildren(value.field("parameters")!).filter((node) => !node.is("comment"))[1];
     const type = parameter.field("type");
     const text = `: { ${[...properties].map(([key, type]) => `${key}: ${type}`).join("; ")} }`;
     if (type) edits.push(type.replace(text));
@@ -184,18 +184,18 @@ function adaptTemplateContext(value: SgNode<Js>, context: SgNode<Js>, typescript
 
 function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
   if (!node) return false;
-  if (node.kind() === "string" || node.kind() === "template_string") return true;
-  if (node.kind() === "identifier" || node.kind() === "member_expression") return strings.has(node.text());
-  if (node.kind() === "parenthesized_expression") return returnsString(namedChildren(node)[0], strings);
-  if (node.kind() === "binary_expression" && node.field("operator")?.text() === "+") {
+  if (node.is("string") || node.is("template_string")) return true;
+  if (node.is("identifier") || node.is("member_expression")) return strings.has(node.text());
+  if (node.is("parenthesized_expression")) return returnsString(namedChildren(node)[0], strings);
+  if (node.is("binary_expression") && node.field("operator")?.text() === "+") {
     return returnsString(node.field("left"), strings) || returnsString(node.field("right"), strings);
   }
-  if (node.kind() === "ternary_expression") {
+  if (node.is("ternary_expression")) {
     return returnsString(node.field("consequence"), strings) && returnsString(node.field("alternative"), strings);
   }
-  if (node.kind() === "call_expression") {
-    const callee = node.field("function");
-    return callee?.kind() === "member_expression"
+  if (node.is("call_expression")) {
+    const callee: SgNode<Js> = node.field("function");
+    return callee?.is("member_expression")
       && STRING_METHODS.has(callee.field("property")?.text() ?? "")
       && returnsString(callee.field("object"), strings);
   }
@@ -206,8 +206,8 @@ function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
 // to inline string transforms whose result we can establish without executing
 // user code. Unsupported context APIs and async/unknown returns need adaptation.
 export function nativeTemplate(value: SgNode<Js>, typescript = false): string | null {
-  if (!["arrow_function", "function_expression"].includes(value.kind())) return null;
-  if (value.children().some((node) => node.kind() === "async")) return null;
+  if (!["arrow_function", "function_expression"].some((kind) => value.is(kind))) return null;
+  if (value.children().some((node) => node.is("async"))) return null;
   if (value.findAll({ rule: { any: [
     { kind: "await_expression" }, { kind: "this" },
     { kind: "assignment_expression" }, { kind: "augmented_assignment_expression" },
@@ -223,20 +223,20 @@ export function nativeTemplate(value: SgNode<Js>, typescript = false): string | 
   if (context) for (const property of ["resource", "resourcePath", "resourceQuery", "resourceFragment", "context"]) strings.add(`${context.text()}.${property}`);
   const body = value.field("body");
   if (!body) return null;
-  if (body.kind() !== "statement_block") return returnsString(body, strings) ? text : null;
-  const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
+  if (!body.is("statement_block")) return returnsString(body, strings) ? text : null;
+  const statements = namedChildren(body).filter((node) => !node.is("comment"));
   const last = statements.pop();
-  if (last?.kind() !== "return_statement") return null;
+  if (!last?.is("return_statement")) return null;
   for (const statement of statements) {
-    const expression = statement.kind() === "expression_statement" ? namedChildren(statement)[0] : undefined;
-    const callee = expression?.kind() === "call_expression" ? expression.field("function") : undefined;
-    if (context && callee?.kind() === "member_expression" && callee.field("object")?.text() === context.text() && CONTEXT_METHODS.has(callee.field("property")?.text() ?? "")) continue;
-    if (statement.kind() !== "lexical_declaration" || !statement.text().startsWith("const ")) return null;
-    for (const declaration of namedChildren(statement).filter((node) => node.kind() !== "comment")) {
+    const expression = statement.is("expression_statement") ? namedChildren(statement)[0] : undefined;
+    const callee: SgNode<Js> | undefined = expression?.is("call_expression") ? expression.field("function") : undefined;
+    if (context && callee?.is("member_expression") && callee.field("object")?.text() === context.text() && CONTEXT_METHODS.has(callee.field("property")?.text() ?? "")) continue;
+    if (!statement.is("lexical_declaration") || !statement.text().startsWith("const ")) return null;
+    for (const declaration of namedChildren(statement).filter((node) => !node.is("comment"))) {
       const binding = declaration.field("name");
-      if (binding?.kind() !== "identifier" || !returnsString(declaration.field("value"), strings)) return null;
+      if (!binding?.is("identifier") || !returnsString(declaration.field("value"), strings)) return null;
       strings.add(binding.text());
     }
   }
-  return returnsString(namedChildren(last).find((node) => node.kind() !== "comment") ?? null, strings) ? text : null;
+  return returnsString(namedChildren(last).find((node) => !node.is("comment")) ?? null, strings) ? text : null;
 }
