@@ -7,7 +7,6 @@ module.exports = {
   },
   experiments: {
     html: true,
-    outputModule: true,
   },
   entry: "./src/index.js",
 };

@@ -38,7 +38,7 @@ const LOST_OPTION_HINTS = new Map([
   ["hash", "use [contenthash] in output.htmlFilename"],
   ["chunks", "use per-entry `html` descriptors"],
   ["excludeChunks", "use per-entry `html` descriptors"],
-  ["scriptLoading", "module scripts come from experiments.outputModule"],
+  ["scriptLoading", "module scripts come from output.module"],
   ["templateContent", "author the page as an .html entry file"],
   ["html-loader.sources", "customize the rule's parser.sources list"],
   [
@@ -293,8 +293,14 @@ class HtmlMigration {
     if (!plan.outputProps.some((prop) => prop.name === "module")) {
       plan.outputProps.push({ name: "module", valueText: "true" });
     }
-    if (!plan.experimentsProps.some((prop) => prop.name === "outputModule")) {
-      plan.experimentsProps.push({ name: "outputModule", valueText: "true" });
+    // ESM output is stable since webpack 5.111. Remove the obsolete flag
+    // only when its value is a literal, preserving any expression side effects.
+    const experiments = findPair(plan.config, "experiments")?.field("value");
+    const flag = experiments?.kind() === "object" ? findPair(experiments, "outputModule") : undefined;
+    const value = flag?.field("value");
+    if (flag && (value?.kind() === "true" || value?.kind() === "false")) {
+      this.editor.keepBracesOpen(experiments!);
+      this.editor.markForRemoval(flag);
     }
   }
 
@@ -997,7 +1003,7 @@ class HtmlMigration {
         if (templateMode) {
           if (literal === "module") {
             findings.lost.push(
-              'scriptLoading (enable experiments.outputModule and use <script type="module"> in the template)',
+              'scriptLoading (enable output.module and use <script type="module"> in the template)',
             );
           }
         } else if (literal === "blocking") {
@@ -1249,7 +1255,7 @@ class HtmlMigration {
         const existing = findPair(value, prop.name)?.field("value");
         if (!existing) continue;
         if (
-          (key === "experiments" && (prop.name === "html" || prop.name === "outputModule")) ||
+          (key === "experiments" && prop.name === "html") ||
           (key === "output" && prop.name === "module") ||
           (key === "output" && prop.name === "html" && (existing.kind() === "false" || existing.kind() === "true"))
         ) {

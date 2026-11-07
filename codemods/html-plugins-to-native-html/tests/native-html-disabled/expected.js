@@ -1,4 +1,4 @@
 module.exports = {
-  experiments: { html: true, outputModule: true },
+  experiments: { html: true },
   output: { htmlFilename: "index.html", html: true, module: true },
 };
