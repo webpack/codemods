@@ -13,17 +13,23 @@ async function transform(root: SgRoot<Json>): Promise<string | null> {
   const rootNode = root.root() as unknown as SgNode<Js>;
   const editor = new ConfigEditor(rootNode);
   const manifest = namedChildren(rootNode)[0];
-  if (!manifest || manifest.kind() !== "object") return null;
+
+  if (!manifest || !manifest.is("object")) return null;
+
   for (const key of DEPENDENCY_KEYS) {
     const value = findPair(manifest, key)?.field("value");
-    if (!value || value.kind() !== "object") continue;
+    if (!value || !value.is("object")) continue;
+  
     for (const pair of pairsOf(value)) {
       const name = keyName(pair);
       if (name && REMOVED_PACKAGES.has(name)) editor.markForRemoval(pair);
     }
   }
+
   editor.finalizeRemovals();
+
   if (!editor.hasEdits) return null;
+
   return editor.commit();
 }
 

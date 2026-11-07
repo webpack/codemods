@@ -1,5 +1,5 @@
 import type Js from "@codemod.com/jssg-types/langs/javascript";
-import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
+import type { Codemod, SgNode, SgRoot } from "codemod:ast-grep";
 import {
   ConfigEditor,
   type ModuleBinding,
@@ -16,7 +16,6 @@ import {
   namedChildren,
   pairsOf,
   ruleMatchesFiles,
-  unquote,
   unwrapFilterCall,
 } from "@webpack/codemod-utils";
 
@@ -160,31 +159,38 @@ class CssMigration {
   // `MiniCssExtractPlugin["loader"]`, or `require("mini-css-extract-plugin").loader`.
   private isPluginLoaderExpression(node: SgNode<Js>): boolean {
     let objectPart: SgNode<Js> | null = null;
-    if (node.kind() === "member_expression") {
+    if (node.is("member_expression")) {
       if (node.field("property")?.text() !== "loader") return false;
       objectPart = node.field("object");
-    } else if (node.kind() === "subscript_expression") {
+    } else if (node.is("subscript_expression")) {
       const indexPart = node.field("index");
-      if (!indexPart || indexPart.kind() !== "string" || unquote(indexPart.text()) !== "loader") {
+      const indexPartText =  indexPart?.find({ rule: { kind: "string_fragment" } })?.text();
+      if (!indexPart || !indexPart.is( "string") || indexPartText !== "loader") {
         return false;
       }
       objectPart = node.field("object");
     }
     if (!objectPart) return false;
-    if (objectPart.kind() === "identifier") return this.pluginNames.has(objectPart.text());
+    if (objectPart.is("identifier")) return this.pluginNames.has(objectPart.text());
     return this.isInlinePluginRequire(objectPart);
   }
 
   // An inline `require("mini-css-extract-plugin")` call expression.
   private isInlinePluginRequire(node: SgNode<Js>): boolean {
-    if (node.kind() !== "call_expression") return false;
+    if (!node.is("call_expression")) return false;
+
     const callee = node.field("function");
-    if (!callee || callee.kind() !== "identifier" || callee.text() !== "require") return false;
+    if (!callee || !callee.is("identifier") || callee.text() !== "require") return false;
+    
     const argumentsNode = node.field("arguments");
     const args = argumentsNode ? namedChildren(argumentsNode) : [];
-    return (
-      args.length === 1 && args[0].kind() === "string" && unquote(args[0].text()) === PLUGIN_MODULE
-    );
+
+    if (args.length !== 1) return false;
+
+    const arg = args[0];
+    if (!arg.is("string")) return false;
+
+    return arg.find({ rule: { kind: "string_fragment" } })?.text() === PLUGIN_MODULE;
   }
 
   // A `use` entry replaceable by native CSS, unwrapping dev/prod guards.
@@ -194,7 +200,7 @@ class CssMigration {
       return branches.length > 0 && branches.every((branch) => this.isRemovableUseElement(branch));
     }
     if (this.isPluginLoaderExpression(node)) return true;
-    if (node.kind() === "object") {
+    if (node.is("object")) {
       const loaderValue = findPair(node, "loader")?.field("value");
       if (!loaderValue) return false;
       if (this.isPluginLoaderExpression(loaderValue)) return true;
@@ -217,7 +223,7 @@ class CssMigration {
       for (const branch of branches) this.collectLoaderOptionFindings(branch, ruleObject, findings);
       return;
     }
-    if (node.kind() !== "object") return;
+    if (!node.is("object")) return;
     const loaderValue = findPair(node, "loader")?.field("value");
     const isExtractLoader = Boolean(loaderValue && this.isPluginLoaderExpression(loaderValue));
     const loaderName = isExtractLoader ? EXTRACT_LOADER_NAME : loaderNameOf(node);
@@ -230,7 +236,7 @@ class CssMigration {
     const optionsPair = findPair(node, "options");
     if (!optionsPair) return;
     const optionsValue = optionsPair.field("value");
-    if (!optionsValue || optionsValue.kind() !== "object") {
+    if (!optionsValue || !optionsValue.is("object")) {
       findings.lost.push(`${loaderName}.options`);
       return;
     }
@@ -250,9 +256,9 @@ class CssMigration {
       }
       if (loaderName === EXTRACT_LOADER_NAME && name === "emit" && value) {
         // `emit: false` (SSR) maps to the native exports-only generator.
-        if (value.kind() === "false") {
+        if (value.is("false")) {
           findings.generatorProps.push({ name: "exportsOnly", valueText: "true" });
-        } else if (value.kind() !== "true") {
+        } else if (!value.is("true")) {
           findings.lost.push(`${EXTRACT_LOADER_NAME}.emit`);
         }
         continue;
@@ -262,7 +268,7 @@ class CssMigration {
         // non-literal values can't be carried over safely.
         if (this.isRedundantExtractPublicPath(value, ruleObject)) {
           // Extraction-relative workaround — native CSS resolves this itself.
-        } else if (value.kind() === "string") {
+        } else if (value.is("string")) {
           findings.cssPublicPath ??= value.text();
         } else {
           findings.lost.push(`${EXTRACT_LOADER_NAME}.publicPath`);
@@ -276,11 +282,12 @@ class CssMigration {
       if (name === "sourceMap") {
         // `true` means "follow devtool", which is native behavior; `false`
         // becomes a per-type `devtool` entry on the enclosing config.
-        if (value.kind() === "false") findings.cssSourceMapOff = true;
-        else if (value.kind() !== "true") findings.lost.push(`${loaderName}.sourceMap`);
+        if (value.is("false")) findings.cssSourceMapOff = true;
+        else if (!value.is("true")) findings.lost.push(`${loaderName}.sourceMap`);
       } else if (name === "exportType") {
-        // "array" only described the loader-chain format that is now gone.
-        const exportType = value.kind() === "string" ? unquote(value.text()) : null;
+        // "array" only described the loader-chain format that is now gone
+        const exportType = value.find({ rule: { kind: "string_fragment" } })?.text();
+        
         if (exportType === "css-style-sheet" || exportType === "string") {
           const mapped = exportType === "string" ? "text" : exportType;
           findings.parserProps.push({ name: "exportType", valueText: `"${mapped}"` });
@@ -289,7 +296,7 @@ class CssMigration {
         }
       } else if (name === "url" || name === "import") {
         // Booleans map to the rule's parser; filter functions have no equivalent.
-        if (value.kind() === "true" || value.kind() === "false") {
+        if (value.is("true") || value.is("false")) {
           findings.parserProps.push({ name, valueText: value.text() });
         } else {
           findings.lost.push(`${loaderName}.${name}`);
@@ -315,8 +322,8 @@ class CssMigration {
       findings.lost.push("css-loader.modules");
       return;
     }
-    if (value.kind() === "true") return;
-    if (value.kind() !== "object") {
+    if (value.is("true")) return;
+    if (!value.is("object")) {
       findings.lost.push("css-loader.modules");
       return;
     }
@@ -330,12 +337,13 @@ class CssMigration {
       switch (subName) {
         case "auto":
           // Only `auto: true` matches the native `*.module.*` convention.
-          if (subValue.kind() !== "true") findings.lost.push("css-loader.modules.auto");
+          if (!subValue.is("true")) findings.lost.push("css-loader.modules.auto");
           break;
         case "mode": {
           // "local" is what `css/auto` already does for these rules; "global"
           // and "pure" have dedicated native forms; functions do not.
-          const mode = subValue.kind() === "string" ? unquote(subValue.text()) : null;
+          const mode = subValue.find({ rule: { kind: "string_fragment" } })?.text();
+
           if (mode === "global") findings.cssType = "css/global";
           else if (mode === "pure") findings.parserProps.push({ name: "pure", valueText: "true" });
           else if (mode !== "local") findings.lost.push("css-loader.modules.mode");
@@ -355,10 +363,10 @@ class CssMigration {
           findings.parserProps.push({ name: "namedExports", valueText: subValue.text() });
           break;
         case "exportLocalsConvention": {
-          const mapped =
-            subValue.kind() === "string"
-              ? EXPORTS_CONVENTION_MAP.get(unquote(subValue.text()))
-              : undefined;
+          const subValueText = subValue.find({ rule: { kind: "string_fragment" } })?.text();
+
+          const mapped = subValueText ? EXPORTS_CONVENTION_MAP.get(subValueText) : undefined;
+
           if (mapped) {
             findings.generatorProps.push({ name: "exportsConvention", valueText: `"${mapped}"` });
           } else {
@@ -375,14 +383,14 @@ class CssMigration {
   // Native css injection reads `output.crossOriginLoading`; `nonce` is served
   // by the `__webpack_nonce__` runtime global, which config cannot set.
   private collectStyleAttributes(value: SgNode<Js>, findings: OptionFindings): void {
-    if (value.kind() !== "object") {
+    if (!value.is("object")) {
       findings.lost.push("style-loader.attributes");
       return;
     }
     for (const attribute of pairsOf(value)) {
       const name = keyName(attribute);
       const attrValue = attribute.field("value");
-      const literal = attrValue && attrValue.kind() === "string" ? unquote(attrValue.text()) : null;
+      const literal = attrValue && attrValue.is("string") ? attrValue.find({ rule: { kind: "string_fragment" } })?.text() : null;
       if (name === "crossorigin" && (literal === "anonymous" || literal === "use-credentials")) {
         findings.outputProps.push({ name: "crossOriginLoading", valueText: `"${literal}"` });
       } else {
@@ -410,9 +418,9 @@ class CssMigration {
   }
 
   private hasIssuerRule(arrayNode: SgNode<Js> | null, issuerText: string): boolean {
-    if (!arrayNode || arrayNode.kind() !== "array") return false;
+    if (!arrayNode || !arrayNode.is("array")) return false;
     return namedChildren(arrayNode).some((element) => {
-      if (element.kind() !== "object") return false;
+      if (!element.is("object")) return false;
       return findPair(element, "issuer")?.field("value")?.text() === issuerText;
     });
   }
@@ -421,18 +429,24 @@ class CssMigration {
   // workaround ("./", "../") native CSS does not need, or when it just repeats
   // the config's own `output.publicPath`.
   private isRedundantExtractPublicPath(value: SgNode<Js>, ruleObject: SgNode<Js>): boolean {
-    if (value.kind() !== "string") return false;
-    const text = unquote(value.text());
+    if (!value.is("string")) return false;
+
+    // in theroy it's impossible to have "string" wihhout a string_fragment
+    // but typescript doesn't know that, so we need to check for null/undefined
+    const text = value.find({ rule: { kind: "string_fragment" } })?.text() ?? "";
+
     if (text.startsWith(".")) return true;
+
     const config = findConfigObjectFor(ruleObject);
     const outputValue = config ? findPair(config, "output")?.field("value") : undefined;
     const publicPath =
-      outputValue && outputValue.kind() === "object"
+      outputValue && outputValue.is("object")
         ? findPair(outputValue, "publicPath")?.field("value")
         : undefined;
-    return Boolean(
-      publicPath && publicPath.kind() === "string" && unquote(publicPath.text()) === text,
-    );
+    
+    if (!publicPath || !publicPath.is("string")) return false;
+    
+    return Boolean(publicPath.find({ rule: { kind: "string_fragment" } })?.text() === text);
   }
 
   // The plugin instantiation behind a plugins element, unwrapping guards.
@@ -445,7 +459,7 @@ class CssMigration {
       }
       return null;
     }
-    if (element.kind() !== "new_expression") return null;
+    if (!element.is("new_expression")) return null;
     const constructorNode = element.field("constructor");
     return constructorNode && this.pluginNames.has(constructorNode.text()) ? element : null;
   }
@@ -512,17 +526,17 @@ class CssMigration {
       const originalValue = pair.field("value");
       if (!originalValue) continue;
       const value = unwrapFilterCall(originalValue);
-      const elements = value.kind() === "array" ? namedChildren(value) : [value];
+      const elements = value.is("array") ? namedChildren(value) : [value];
       if (!elements.length) continue;
       // Any other loader (preprocessors, custom ones) stays in front of native CSS.
       const kept = elements.filter((element) => !this.isRemovableUseElement(element));
       if (kept.length === elements.length) continue;
       const ruleObject = pair.parent();
-      if (!ruleObject || ruleObject.kind() !== "object") continue;
+      if (!ruleObject || !ruleObject.is("object")) continue;
       const arrayNode = ruleObject.parent();
       // Only touch rules the file demonstrably owns as webpack config — never
       // fragments pushed into another tool's config (Storybook, craco, …).
-      if (!arrayNode || arrayNode.kind() !== "array") continue;
+      if (!arrayNode || !arrayNode.is("array")) continue;
       if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
       const findings: OptionFindings = {
         lost: [],
@@ -585,12 +599,12 @@ class CssMigration {
   ): void {
     for (const pair of loaderPairs) {
       const ruleObject = pair.parent();
-      if (!ruleObject || ruleObject.kind() !== "object") continue;
+      if (!ruleObject || !ruleObject.is("object")) continue;
       if (!findPair(ruleObject, "test") || findPair(ruleObject, "use")) continue;
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
       const arrayNode = ruleObject.parent();
-      if (!arrayNode || arrayNode.kind() !== "array") continue;
+      if (!arrayNode || !arrayNode.is("array")) continue;
       if (!this.isWebpackRuleContext(pair, arrayNode)) continue;
       const findings: OptionFindings = {
         lost: [],
@@ -654,22 +668,22 @@ class CssMigration {
   // config has a `module` ancestor, or the file imports the extract plugin.
   private isWebpackRuleContext(usePair: SgNode<Js>, arrayNode: SgNode<Js>): boolean {
     const owner = arrayNode.parent();
-    if (owner && owner.kind() === "pair") {
+    if (owner && owner.is("pair")) {
       const name = keyName(owner);
       if (name === "rules" || name === "oneOf") return true;
     }
     // Assignments into another tool's mutable config parameter
     // (`config.module.rules = [...]` in next.config, Storybook, …) are not
     // ours; assignments to the file's own exports are.
-    if (owner && owner.kind() === "assignment_expression") {
+    if (owner && owner.is("assignment_expression")) {
       const left = owner.field("left")?.text() ?? "";
       const isOwnExport =
         left === "module.exports" ||
         left.startsWith("module.exports.") ||
         left.startsWith("exports.");
       if (!isOwnExport) return false;
+      return true;
     }
-    if (this.pluginNames.size > 0) return true;
     return findConfigObjectFor(usePair) !== null;
   }
 
@@ -733,7 +747,7 @@ class CssMigration {
       const originalValue = pair.field("value");
       if (!originalValue) continue;
       const value = unwrapFilterCall(originalValue);
-      if (value.kind() !== "array") continue;
+      if (!value.is("array")) continue;
       const elements = namedChildren(value);
       const removed: PluginRemoval[] = [];
       for (const element of elements) {
@@ -752,11 +766,11 @@ class CssMigration {
 
   private collectPluginOptions(pluginsPair: SgNode<Js>, removed: PluginRemoval[]): void {
     const configObject = pluginsPair.parent();
-    if (!configObject || configObject.kind() !== "object") return;
+    if (!configObject || !configObject.is("object")) return;
     for (const removal of removed) {
       const argumentsNode = removal.instantiation.field("arguments");
       const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
-      if (!optionsObject || optionsObject.kind() !== "object") continue;
+      if (!optionsObject || !optionsObject.is("object")) continue;
       const plan = this.planFor(configObject);
       for (const optionPair of pairsOf(optionsObject)) {
         const mapped = PLUGIN_OPTION_TO_OUTPUT.get(keyName(optionPair) ?? "");
@@ -784,7 +798,7 @@ class CssMigration {
       const objectPart = node.field("object");
       if (!objectPart) continue;
       if (
-        (objectPart.kind() === "identifier" && this.pluginNames.has(objectPart.text())) ||
+        (objectPart.is("identifier") && this.pluginNames.has(objectPart.text())) ||
         this.isInlinePluginRequire(objectPart)
       ) {
         receivers.push(objectPart);
@@ -815,7 +829,7 @@ class CssMigration {
     if (webpackBindings.length) return `${webpackBindings[0].name}.web.CssLoadingRuntimeModule`;
     const binding = this.pluginBindings[0];
     if (binding) {
-      const isEsm = binding.statement.kind() === "import_statement";
+      const isEsm = binding.statement.is("import_statement");
       this.editor.replace(
         binding.statement,
         isEsm ? 'import { web } from "webpack";' : 'const { web } = require("webpack");',
@@ -883,7 +897,7 @@ class CssMigration {
     // Only when every css-loader rule in this config disabled its maps.
     if (!plan.sourceMapOffRules || this.hasMixedSourceMaps(plan)) return;
     const value = findPair(plan.config, "devtool")?.field("value");
-    if (!value || value.kind() === "false" || value.kind() === "array") return;
+    if (!value || value.is("false") || value.is("array")) return;
     this.editor.replace(
       value,
       `[{ type: "javascript", use: ${value.text()} }, { type: "css", use: false }]`,
@@ -899,7 +913,7 @@ class CssMigration {
     topProperties: ((indent: string, unit: string) => string)[],
   ): void {
     const value = findPair(config, key)?.field("value");
-    if (value && value.kind() === "object") {
+    if (value && value.is("object")) {
       const missing = props
         .filter((prop) => !findPair(value, prop.name))
         .map((prop) => `${prop.name}: ${prop.valueText}`);
@@ -915,7 +929,7 @@ class CssMigration {
   }
 }
 
-async function transform(root: SgRoot<Js>): Promise<string | null> {
+const transform: Codemod<Js> = async (root) => {
   return new CssMigration(root).run();
 }
 
