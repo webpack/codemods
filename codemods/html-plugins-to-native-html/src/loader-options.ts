@@ -31,3 +31,63 @@ export function nativeSources(value: SgNode<Js>): string | null {
   }
   return list.text();
 }
+
+const STRING_METHODS = new Set([
+  "concat", "normalize", "padEnd", "padStart", "repeat", "replace", "replaceAll",
+  "slice", "substring", "toLowerCase", "toUpperCase", "trim", "trimEnd", "trimStart",
+]);
+
+function returnsString(node: SgNode<Js> | null, strings: Set<string>): boolean {
+  if (!node) return false;
+  if (node.kind() === "string" || node.kind() === "template_string") return true;
+  if (node.kind() === "identifier") return strings.has(node.text());
+  if (node.kind() === "parenthesized_expression") return returnsString(namedChildren(node)[0], strings);
+  if (node.kind() === "binary_expression" && node.field("operator")?.text() === "+") {
+    return returnsString(node.field("left"), strings) || returnsString(node.field("right"), strings);
+  }
+  if (node.kind() === "ternary_expression") {
+    return returnsString(node.field("consequence"), strings) && returnsString(node.field("alternative"), strings);
+  }
+  if (node.kind() === "call_expression") {
+    const callee = node.field("function");
+    return callee?.kind() === "member_expression"
+      && STRING_METHODS.has(callee.field("property")?.text() ?? "")
+      && returnsString(callee.field("object"), strings);
+  }
+  return false;
+}
+
+// Native templates must synchronously return a string. Limit automatic migration
+// to inline string transforms whose result we can establish without executing
+// user code. LoaderContext and async/unknown calls require manual adaptation.
+export function nativeTemplate(value: SgNode<Js>): string | null {
+  if (!["arrow_function", "function_expression"].includes(value.kind())) return null;
+  if (value.children().some((node) => node.kind() === "async")) return null;
+  if (value.findAll({ rule: { any: [
+    { kind: "await_expression" }, { kind: "this" },
+    { kind: "assignment_expression" }, { kind: "augmented_assignment_expression" },
+    { kind: "update_expression" }, { pattern: "arguments" },
+  ] } }).length) return null;
+  const parameters = value.field("parameters");
+  const parameter = value.field("parameter");
+  const params = parameters ? namedChildren(parameters).filter((node) => node.kind() !== "comment") : parameter ? [parameter] : [];
+  if (params.length > 1) return null;
+  const name = params[0]?.field("pattern") ?? params[0];
+  if (name && name.kind() !== "identifier") return null;
+  const strings = new Set(name ? [name.text()] : []);
+  const body = value.field("body");
+  if (!body) return null;
+  if (body.kind() !== "statement_block") return returnsString(body, strings) ? value.text() : null;
+  const statements = namedChildren(body).filter((node) => node.kind() !== "comment");
+  const last = statements.pop();
+  if (last?.kind() !== "return_statement") return null;
+  for (const statement of statements) {
+    if (statement.kind() !== "lexical_declaration" || !statement.text().startsWith("const ")) return null;
+    for (const declaration of namedChildren(statement).filter((node) => node.kind() !== "comment")) {
+      const binding = declaration.field("name");
+      if (binding?.kind() !== "identifier" || !returnsString(declaration.field("value"), strings)) return null;
+      strings.add(binding.text());
+    }
+  }
+  return returnsString(namedChildren(last).find((node) => node.kind() !== "comment") ?? null, strings) ? value.text() : null;
+}

@@ -21,7 +21,7 @@ import {
 } from "@webpack/codemod-utils";
 import { collectMinification, planMinification, type Minification } from "./minification";
 import { queueTemplate, recordSource } from "./migration-state";
-import { nativeSources } from "./loader-options";
+import { nativeSources, nativeTemplate } from "./loader-options";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
 const LOADER_NAME = "html-loader";
@@ -354,6 +354,12 @@ class HtmlMigration {
         const sources = nativeSources(value);
         if (sources === null) findings.supported = false;
         else findings.parserProps.push({ name: "sources", valueText: sources });
+        continue;
+      }
+      if (name === "preprocessor" && value) {
+        const template = nativeTemplate(value);
+        if (template === null) findings.supported = false;
+        else findings.parserProps.push({ name: "template", valueText: template });
         continue;
       }
       findings.lost.push(this.describeLost(`${LOADER_NAME}.${name ?? "options"}`));
