@@ -119,6 +119,7 @@ interface InstanceFindings {
 // Loader options translated into the surviving rule, plus the ones lost.
 interface LoaderFindings {
   supported: boolean;
+  sourceDefaults: boolean;
   lost: string[];
   parserProps: HtmlProp[];
   minification: Minification[];
@@ -127,6 +128,7 @@ interface LoaderFindings {
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
   config: SgNode<Js>;
+  sourceDefaults: boolean;
   minification: Minification[];
   commentLines: string[];
   // Emit a global `output.html` (single-page mode; per-entry pages skip it).
@@ -267,6 +269,7 @@ class HtmlMigration {
     if (!plan) {
       plan = {
         config,
+        sourceDefaults: false,
         minification: [],
         commentLines: [],
         htmlEnabled: false,
@@ -354,7 +357,10 @@ class HtmlMigration {
       if (name === "sources" && value) {
         const sources = nativeSources(value);
         if (sources === null) findings.supported = false;
-        else findings.parserProps.push({ name: "sources", valueText: sources });
+        else {
+          findings.parserProps.push({ name: "sources", valueText: sources.text });
+          findings.sourceDefaults ||= sources.extendsDefaults;
+        }
         continue;
       }
       if (name === "preprocessor" && value) {
@@ -395,7 +401,7 @@ class HtmlMigration {
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { supported: true, lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, sourceDefaults: false, lost: [], parserProps: [], minification: [] };
       for (const element of elements) this.collectLoaderFindings(element, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -419,7 +425,7 @@ class HtmlMigration {
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { supported: true, lost: [], parserProps: [], minification: [] };
+      const findings: LoaderFindings = { supported: true, sourceDefaults: false, lost: [], parserProps: [], minification: [] };
       this.collectLoaderFindings(ruleObject, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -463,6 +469,10 @@ class HtmlMigration {
       if (swap.findings.parserProps.some((other) => other.name === prop.name && other.valueText !== prop.valueText)) return;
     }
     swap.findings.parserProps = dedupeProps(swap.findings.parserProps);
+    if (swap.findings.sourceDefaults) {
+      if (!config || !this.canNormalizeSourceDefaults(config)) return;
+      this.planFor(config).sourceDefaults = true;
+    }
     if (config) {
       this.planFor(config).minification.push(
         ...(swap.findings.minification.length ? swap.findings.minification : [{ html: null, lost: [] }]),
@@ -1191,6 +1201,41 @@ class HtmlMigration {
 
   // ---------- config-level insertions ----------
 
+  private canNormalizeSourceDefaults(config: SgNode<Js>): boolean {
+    let current: SgNode<Js> = config;
+    for (const name of ["module", "parser", "html"]) {
+      const value = findPair(current, name)?.field("value");
+      if (!value) return true;
+      if (value.kind() !== "object" || namedChildren(value).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) return false;
+      current = value;
+    }
+    const sources = findPair(current, "sources")?.field("value");
+    if (!sources || sources.kind() === "true") return true;
+    const elements = sources.kind() === "array" ? namedChildren(sources).filter((node) => node.kind() !== "comment") : [];
+    return elements.length === 1 && elements[0].kind() === "string" && unquote(elements[0].text()) === "...";
+  }
+
+  private normalizeSourceDefaults(config: SgNode<Js>): void {
+    // Rule parser options are clever-merged with global HTML parser defaults.
+    // Its default `sources: true` would expand a rule's "..." to `[true, ...]`,
+    // which fails validation. `["..."]` is equivalent but survives that merge.
+    let current = findPair(config, "module")!.field("value")!;
+    for (const [name, text] of [
+      ["parser", 'parser: { html: { sources: ["..."] } }'],
+      ["html", 'html: { sources: ["..."] }'],
+    ]) {
+      const value = findPair(current, name)?.field("value");
+      if (!value) {
+        this.editor.insertIntoObject(current, () => [text]);
+        return;
+      }
+      current = value;
+    }
+    const sources = findPair(current, "sources")?.field("value");
+    if (sources?.kind() === "true") this.editor.replace(sources, '["..."]');
+    else if (!sources) this.editor.insertIntoObject(current, () => ['sources: ["..."]']);
+  }
+
   private mergeIntoPlan(configObject: SgNode<Js>, findings: InstanceFindings): void {
     const plan = this.planFor(configObject);
     plan.minification.push(findings.minification);
@@ -1212,6 +1257,7 @@ class HtmlMigration {
 
   private planConfigInsertions(): void {
     for (const plan of this.configPlans.values()) {
+      if (plan.sourceDefaults) this.normalizeSourceDefaults(plan.config);
       const topProperties: ((indent: string, unit: string) => string)[] = [];
       const optimization = planMinification(this.editor, plan.config, plan.minification, plan.commentLines);
       if (optimization) topProperties.push(() => optimization);

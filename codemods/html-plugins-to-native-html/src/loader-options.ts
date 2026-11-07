@@ -4,11 +4,11 @@ import { findPair, keyName, namedChildren, unquote } from "@webpack/codemod-util
 
 // The native parser accepts the list directly. Loader callbacks have different
 // signatures, so retain rules with filters, functions, spreads or dynamic lists.
-export function nativeSources(value: SgNode<Js>): string | null {
-  if (value.kind() === "true" || value.kind() === "false") return value.text();
+export function nativeSources(value: SgNode<Js>): { text: string; extendsDefaults: boolean } | null {
+  if (value.kind() === "true" || value.kind() === "false") return { text: value.text(), extendsDefaults: false };
   if (value.kind() !== "object") return null;
   const options = namedChildren(value).filter((node) => node.kind() !== "comment");
-  if (!options.length) return "true";
+  if (!options.length) return { text: "true", extendsDefaults: false };
   if (options.length !== 1 || keyName(options[0]) !== "list") return null;
   const list = options[0].field("value");
   if (list?.kind() !== "array") return null;
@@ -29,7 +29,10 @@ export function nativeSources(value: SgNode<Js>): string | null {
       } else if (option.kind() !== "string") return null;
     }
   }
-  return list.text();
+  return {
+    text: list.text(),
+    extendsDefaults: namedChildren(list).some((node) => node.kind() === "string" && unquote(node.text()) === "..."),
+  };
 }
 
 const STRING_METHODS = new Set([

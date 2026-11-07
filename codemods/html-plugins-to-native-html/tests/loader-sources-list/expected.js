@@ -3,6 +3,7 @@ module.exports = {
     html: true,
   },
   module: {
+    parser: { html: { sources: ["..."] } },
     rules: [{
       test: /\.html$/,
       type: "html",
