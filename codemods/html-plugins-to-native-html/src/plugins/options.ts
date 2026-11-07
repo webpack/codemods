@@ -38,6 +38,7 @@ export interface InstanceFindings {
 
 function describeLost(name: string): string {
   const hint = LOST_OPTION_HINTS.get(name);
+
   return hint ? `${name} (${hint})` : name;
 }
 
@@ -58,24 +59,43 @@ export function collectFindings(
     pendingEntry: null,
     scriptLoadingModule: false,
   };
-  if (!optionsObject) return findings;
+
+  if (!optionsObject) {
+    return findings;
+  }
+
   const templateValue = findPair(optionsObject, "template")?.field("value");
   const templateMode = Boolean(templateValue);
+
   if (templateValue) {
-    if (templateValue.is("string")) findings.templateValue = templateValue.text();
-    else findings.lost.push("template");
+    if (templateValue.is("string")) {
+      findings.templateValue = templateValue.text();
+    } else {
+      findings.lost.push("template");
+    }
   }
+
   for (const optionPair of pairsOf(optionsObject)) {
     const name = keyName(optionPair);
     const optionValue = optionPair.field("value");
+
     if (!name || !optionValue) {
       findings.lost.push("options");
+
       continue;
     }
-    if (name === "template" || DROPPABLE_OPTIONS.has(name)) continue;
-    if (skippedOptions && skippedOptions.has(name)) continue;
+
+    if (name === "template" || DROPPABLE_OPTIONS.has(name)) {
+      continue;
+    }
+
+    if (skippedOptions && skippedOptions.has(name)) {
+      continue;
+    }
+
     collectOption(name, optionValue, templateMode, findings);
   }
+
   return findings;
 }
 
@@ -86,28 +106,40 @@ function collectOption(
   findings: InstanceFindings,
 ): void {
   const literal = value.is("string") ? unquote(value.text()) : null;
+
   // Head tags are only injected into webpack-generated pages, never into an
   // authored template — there the tag belongs in the template itself.
   if (HEAD_TAG_OPTIONS.has(name) && templateMode) {
     findings.lost.push(`${name} (add it to the template)`);
+
     return;
   }
+
   switch (name) {
     case "filename":
-      if (value.is("string")) findings.htmlFilename = value.text();
-      else findings.lost.push(describeLost(name));
+      if (value.is("string")) {
+        findings.htmlFilename = value.text();
+      } else {
+        findings.lost.push(describeLost(name));
+      }
+
       break;
     case "title":
     case "favicon":
     case "base":
       findings.htmlProps.push({ name, valueText: value.text() });
+
       break;
     case "meta":
       collectMetaOption(value, findings);
+
       break;
     case "inject":
       // `true` is the native default placement; the template authors its own tags.
-      if (templateMode || value.is("true")) break;
+      if (templateMode || value.is("true")) {
+        break;
+      }
+
       if (value.is("false") || literal === "body" || literal === "head") {
         findings.htmlProps.push({
           name,
@@ -116,10 +148,14 @@ function collectOption(
       } else {
         findings.lost.push(describeLost(name));
       }
+
       break;
     case "scriptLoading":
       // Native `"auto"` already defers classic scripts.
-      if (literal === "defer") break;
+      if (literal === "defer") {
+        break;
+      }
+
       if (templateMode) {
         if (literal === "module") {
           findings.lost.push(
@@ -133,19 +169,30 @@ function collectOption(
       } else {
         findings.lost.push(describeLost(name));
       }
+
       break;
     case "minify":
       findings.lost.push(...findings.minification.lost);
+
       break;
     case "chunks":
-      if (literal !== "all") findings.lost.push(describeLost(name));
+      if (literal !== "all") {
+        findings.lost.push(describeLost(name));
+      }
+
       break;
     case "publicPath":
-      if (literal !== "auto") findings.lost.push(describeLost(name));
+      if (literal !== "auto") {
+        findings.lost.push(describeLost(name));
+      }
+
       break;
     case "hash":
     case "xhtml":
-      if (!value.is("false")) findings.lost.push(describeLost(name));
+      if (!value.is("false")) {
+        findings.lost.push(describeLost(name));
+      }
+
       break;
     default:
       findings.lost.push(describeLost(name));
@@ -158,20 +205,28 @@ function collectOption(
 function collectMetaOption(value: SgNode<Js>, findings: InstanceFindings): void {
   if (!value.is("object")) {
     findings.lost.push("meta");
+
     return;
   }
+
   const parts: string[] = [];
+
   for (const metaPair of pairsOf(value)) {
     const metaKey = keyName(metaPair);
     const metaValue = metaPair.field("value");
+
     if (!metaKey || !metaValue) {
       findings.lost.push("meta");
+
       continue;
     }
+
     if (metaValue.is("string")) {
       parts.push(metaPair.text());
+
       continue;
     }
+
     if (metaValue.is("object")) {
       const nameValue = (findPair(metaValue, "name") ?? findPair(metaValue, "property"))?.field(
         "value",
@@ -180,13 +235,17 @@ function collectMetaOption(value: SgNode<Js>, findings: InstanceFindings): void 
       const extraKeys = pairsOf(metaValue)
         .map((pair) => keyName(pair))
         .filter((key) => key !== "name" && key !== "property" && key !== "content");
+
       if (nameValue?.is("string") && contentValue && !extraKeys.length) {
         parts.push(`"${unquote(nameValue.text())}": ${contentValue.text()}`);
+
         continue;
       }
     }
+
     findings.lost.push(`meta.${metaKey}`);
   }
+
   if (parts.length) {
     findings.htmlProps.push({ name: "meta", valueText: `{ ${parts.join(", ")} }` });
   }

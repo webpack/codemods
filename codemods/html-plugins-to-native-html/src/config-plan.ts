@@ -10,6 +10,7 @@ export interface HtmlProp {
 
 export function dedupeProps(props: HtmlProp[]): HtmlProp[] {
   const seen = new Set<string>();
+
   return props.filter((prop) => !seen.has(prop.name) && seen.add(prop.name));
 }
 
@@ -39,12 +40,12 @@ export class ConfigPlans {
 
   constructor(editor: ConfigEditor) {
     this.editor = editor;
-}
-
+  }
 
   planFor(config: SgNode<Js>): ConfigPlan {
     const key = config.range().start.index;
     let plan = this.configPlans.get(key);
+
     if (!plan) {
       plan = {
         config,
@@ -61,9 +62,9 @@ export class ConfigPlans {
       };
       this.configPlans.set(key, plan);
     }
+
     return plan;
   }
-
 
   requireExperimentsHtml(plan: ConfigPlan): void {
     if (!plan.experimentsProps.some((prop) => prop.name === "html")) {
@@ -71,18 +72,22 @@ export class ConfigPlans {
     }
   }
 
-
   // `scriptLoading: "module"` means ESM output — a config-wide switch.
   applyModuleScripts(plan: ConfigPlan, moduleScripts: boolean): void {
-    if (!moduleScripts) return;
+    if (!moduleScripts) {
+      return;
+    }
+
     if (!plan.outputProps.some((prop) => prop.name === "module")) {
       plan.outputProps.push({ name: "module", valueText: "true" });
     }
+
     // ESM output is stable since webpack 5.111. Remove the obsolete flag
     // only when its value is a literal, preserving any expression side effects.
     const experiments = findPair(plan.config, "experiments")?.field("value");
     const flag = experiments?.is("object") ? findPair(experiments, "outputModule") : undefined;
     const value = flag?.field("value");
+
     if (flag && (value?.is("true") || value?.is("false"))) {
       this.editor.keepBracesOpen(experiments!);
       this.editor.markForRemoval(flag);
@@ -91,64 +96,112 @@ export class ConfigPlans {
 
   canNormalizeSourceDefaults(config: SgNode<Js>): boolean {
     let current: SgNode<Js> = config;
+
     for (const name of ["module", "parser", "html"]) {
       const value = findPair(current, name)?.field("value");
-      if (!value) return true;
-      if (!value.is("object") || namedChildren(value).some((child) => !child.is("pair") && !child.is("comment"))) return false;
+
+      if (!value) {
+        return true;
+      }
+
+      if (
+        !value.is("object") ||
+        namedChildren(value).some((child) => !child.is("pair") && !child.is("comment"))
+      ) {
+        return false;
+      }
+
       current = value;
     }
-    const sources = findPair(current, "sources")?.field("value");
-    if (!sources || sources.is("true")) return true;
-    const elements = sources.is("array") ? namedChildren(sources).filter((node) => !node.is("comment")) : [];
-    return elements.length === 1 && elements[0].is("string") && unquote(elements[0].text()) === "...";
-  }
 
+    const sources = findPair(current, "sources")?.field("value");
+
+    if (!sources || sources.is("true")) {
+      return true;
+    }
+
+    const elements = sources.is("array")
+      ? namedChildren(sources).filter((node) => !node.is("comment"))
+      : [];
+
+    return (
+      elements.length === 1 && elements[0].is("string") && unquote(elements[0].text()) === "..."
+    );
+  }
 
   private normalizeSourceDefaults(config: SgNode<Js>): void {
     // Rule parser options are clever-merged with global HTML parser defaults.
     // Its default `sources: true` would expand a rule's "..." to `[true, ...]`,
     // which fails validation. `["..."]` is equivalent but survives that merge.
     let current = findPair(config, "module")!.field("value")!;
+
     for (const [name, text] of [
       ["parser", 'parser: { html: { sources: ["..."] } }'],
       ["html", 'html: { sources: ["..."] }'],
     ]) {
       const value = findPair(current, name)?.field("value");
+
       if (!value) {
         this.editor.insertIntoObject(current, () => [text]);
+
         return;
       }
+
       current = value;
     }
-    const sources = findPair(current, "sources")?.field("value");
-    if (sources?.is("true")) this.editor.replace(sources, '["..."]');
-    else if (!sources) this.editor.insertIntoObject(current, () => ['sources: ["..."]']);
-  }
 
+    const sources = findPair(current, "sources")?.field("value");
+
+    if (sources?.is("true")) {
+      this.editor.replace(sources, '["..."]');
+    } else if (!sources) {
+      this.editor.insertIntoObject(current, () => ['sources: ["..."]']);
+    }
+  }
 
   planConfigInsertions(): void {
     for (const plan of this.configPlans.values()) {
-      if (plan.sourceDefaults) this.normalizeSourceDefaults(plan.config);
+      if (plan.sourceDefaults) {
+        this.normalizeSourceDefaults(plan.config);
+      }
+
       const topProperties: ((indent: string, unit: string) => string)[] = [];
-      const optimization = planMinification(this.editor, plan.config, plan.minification, plan.commentLines);
-      if (optimization) topProperties.push(() => optimization);
+      const optimization = planMinification(
+        this.editor,
+        plan.config,
+        plan.minification,
+        plan.commentLines,
+      );
+
+      if (optimization) {
+        topProperties.push(() => optimization);
+      }
+
       const pendingEntry = plan.pendingEntry;
+
       if (pendingEntry) {
         topProperties.push(
           (indent) => `// ${pendingEntry.comment}\n${indent}entry: ${pendingEntry.text}`,
         );
       }
+
       const outputProps: HtmlProp[] = [];
       const htmlProps = dedupeProps(plan.htmlProps);
       const existingOutput = findPair(plan.config, "output")?.field("value");
       const existingHtml = existingOutput?.is("object")
-        ? findPair(existingOutput, "html")?.field("value") : undefined;
+        ? findPair(existingOutput, "html")?.field("value")
+        : undefined;
+
       if (existingHtml?.is("object")) {
         const missing = htmlProps.filter((prop) => !findPair(existingHtml, prop.name));
+
         if (missing.length) {
-          this.editor.insertIntoObject(existingHtml, () => missing.map((prop) => `${prop.name}: ${prop.valueText}`));
+          this.editor.insertIntoObject(existingHtml, () =>
+            missing.map((prop) => `${prop.name}: ${prop.valueText}`),
+          );
         }
       }
+
       if (plan.htmlEnabled || htmlProps.length) {
         outputProps.push({
           name: "html",
@@ -157,13 +210,17 @@ export class ConfigPlans {
             : "true",
         });
       }
+
       if (plan.htmlFilename !== null) {
         outputProps.push({ name: "htmlFilename", valueText: plan.htmlFilename });
       }
+
       outputProps.push(...plan.outputProps);
+
       if (outputProps.length) {
         this.planObjectProps(plan.config, "output", outputProps, plan.commentLines, topProperties);
       }
+
       if (plan.experimentsProps.length) {
         this.planObjectProps(
           plan.config,
@@ -173,9 +230,11 @@ export class ConfigPlans {
           topProperties,
         );
       }
+
       if (!outputProps.length && !plan.experimentsProps.length && plan.commentLines.length) {
         this.insertReviewComments(plan.config, plan.commentLines);
       }
+
       if (topProperties.length) {
         // A fully-emptied config keeps its braces open for these properties.
         this.editor.keepBracesOpen(plan.config);
@@ -186,17 +245,19 @@ export class ConfigPlans {
     }
   }
 
-
   private insertReviewComments(node: SgNode<Js>, lines: string[]): void {
-    if (!lines.length) return;
+    if (!lines.length) {
+      return;
+    }
+
     const position = node.range().start.index;
+
     this.editor.addEdit({
       startPos: position,
       endPos: position,
       insertedText: `/* ${lines.join("; ").replace(/\*\//g, "* /")} */ `,
     });
   }
-
 
   // Insert props into the config's `key` object, creating it when absent; an
   // existing non-object value (e.g. a variable) is left alone. Comment lines
@@ -209,30 +270,45 @@ export class ConfigPlans {
     topProperties: ((indent: string, unit: string) => string)[],
   ): void {
     const withComments = (propertyText: string, indent: string, first: boolean): string => {
-      if (!first || !commentLines.length) return propertyText;
+      if (!first || !commentLines.length) {
+        return propertyText;
+      }
+
       if (!config.text().includes("\n")) {
         return `/* ${commentLines.join("; ").replace(/\*\//g, "* /")} */ ${propertyText}`;
       }
+
       return `${commentLines.map((line) => `// ${line}\n${indent}`).join("")}${propertyText}`;
     };
     const value = findPair(config, key)?.field("value");
+
     if (value && value.is("object")) {
       for (const prop of props) {
         const existing = findPair(value, prop.name)?.field("value");
-        if (!existing) continue;
+
+        if (!existing) {
+          continue;
+        }
+
         if (
           (key === "experiments" && prop.name === "html") ||
           (key === "output" && prop.name === "module") ||
-          (key === "output" && prop.name === "html" && (existing.is("false") || existing.is("true")))
+          (key === "output" &&
+            prop.name === "html" &&
+            (existing.is("false") || existing.is("true")))
         ) {
           this.editor.replace(existing, prop.valueText);
         }
       }
+
       const missing = props.filter((prop) => !findPair(value, prop.name));
+
       if (!missing.length) {
         this.insertReviewComments(value, commentLines);
+
         return;
       }
+
       this.editor.insertIntoObject(value, (indent) =>
         missing.map((prop, index) =>
           withComments(`${prop.name}: ${prop.valueText}`, indent, index === 0),
@@ -244,6 +320,7 @@ export class ConfigPlans {
         const texts = props.map((prop, index) =>
           withComments(`${prop.name}: ${prop.valueText}`, inner, index === 0),
         );
+
         return `${key}: {\n${texts.map((text) => `${inner}${text}`).join(",\n")},\n${indent}}`;
       });
     }

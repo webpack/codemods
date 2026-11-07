@@ -16,7 +16,9 @@ function migrateConfiguration(root: SgRoot<Js>): string | null {
   const hooks = new HtmlPluginHooks(editor, bindings);
 
   // A tap on an unavailable native stage keeps the entire file unchanged.
-  if (hooks.usesUnmappableHooks()) return null;
+  if (hooks.usesUnmappableHooks()) {
+    return null;
+  }
 
   const usePairs: SgNode<Js>[] = [];
   const loaderPairs: SgNode<Js>[] = [];
@@ -25,9 +27,13 @@ function migrateConfiguration(root: SgRoot<Js>): string | null {
   for (const pair of editor.rootNode.findAll({ rule: { kind: "pair" } })) {
     const name = keyName(pair);
 
-    if (name === "use") usePairs.push(pair);
-    else if (name === "loader") loaderPairs.push(pair);
-    else if (name === "plugins") pluginsPairs.push(pair);
+    if (name === "use") {
+      usePairs.push(pair);
+    } else if (name === "loader") {
+      loaderPairs.push(pair);
+    } else if (name === "plugins") {
+      pluginsPairs.push(pair);
+    }
   }
 
   const plans = new ConfigPlans(editor);
@@ -40,7 +46,9 @@ function migrateConfiguration(root: SgRoot<Js>): string | null {
   // or templates are changed in their owning configuration.
   rules.transformRules(usePairs, loaderPairs);
 
-  for (const pair of pluginsPairs) plugins.transformPluginsPair(pair);
+  for (const pair of pluginsPairs) {
+    plugins.transformPluginsPair(pair);
+  }
 
   if (plugins.migrated && !plugins.retained && !blockedConfigs.size) {
     hooks.migrateHooks();
@@ -49,10 +57,14 @@ function migrateConfiguration(root: SgRoot<Js>): string | null {
   plans.planConfigInsertions();
   editor.finalizeRemovals();
 
-  if (!editor.hasEdits) return null;
+  if (!editor.hasEdits) {
+    return null;
+  }
 
   for (const binding of [...bindings, ...companions.bindings]) {
-    if (hooks.repurposedStatements.has(binding.statement.range().start.index)) continue;
+    if (hooks.repurposedStatements.has(binding.statement.range().start.index)) {
+      continue;
+    }
 
     editor.removeBindingIfUnused(binding);
   }
