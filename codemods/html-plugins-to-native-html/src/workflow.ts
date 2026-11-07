@@ -355,7 +355,7 @@ class HtmlMigration {
       if (name !== null && DROPPABLE_LOADER_OPTIONS.has(name)) continue;
       if (name === "minimize") continue;
       if (name === "sources" && value) {
-        const sources = nativeSources(value);
+        const sources = nativeSources(value, /\.[cm]?tsx?$/.test(this.configFileName));
         if (sources === null) findings.supported = false;
         else {
           findings.parserProps.push({ name: "sources", valueText: sources.text });

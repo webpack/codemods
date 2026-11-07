@@ -22,6 +22,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 - Rules with extra conditions or surviving options are kept with `type: "html"` instead — and since their presence disables the `"auto"` default, `experiments.html: true` is added to that configuration.
 - Any other loader in the chain (template compilers, custom ones) keeps working in front of native HTML: it stays in `use` while `html-loader` is dropped.
 - Boolean `sources` becomes the rule's `parser: { sources }`, and static `sources.list` arrays become `parser.sources` (including `"..."`, `src` and `srcset` entries). Lists using `"..."` also normalize the global default to `module.parser.html.sources: ["..."]`, so webpack can merge the rule without expanding the boolean `true` into the list. Existing custom or disabled global source lists require manual merging and keep their loader rule.
+- Static source `filter` callbacks are adapted to native attribute maps, including callbacks reading `{ name, value }` attributes. Filters using the resource path, foreign-attribute namespace metadata or an unknown tag stay on the loader. `sources.urlFilter` maps to filters on explicit `src` lists; constant `false` disables URL extraction. Per-candidate `srcset` filtering and global URL filters over `"..."` need manual adaptation. `scriptingEnabled: true` uses native defaults; `false` has no native equivalent.
 - Inline synchronous `preprocessor` functions with a known string result become `parser.template`. Supported functions take at most the content argument and return a string literal, template literal, the content, or string operations such as `replace`/`trim` (including `const` intermediates).
 - `esModule` is dropped (native exports are ESM), and `minimize` uses the same native minifier option mapping as the plugin.
 
@@ -41,7 +42,7 @@ All changes are returned to the codemod runner; the transforms do not use filesy
 - Multi-page configurations with different minification settings per page: native minification applies to the whole compilation.
 - Rules whose existing dynamic `parser` or `experiments` cannot safely receive the migrated settings, or whose parser options conflict with the migrated values.
 - Async preprocessors, unknown return values, LoaderContext-dependent functions, and functions using `this`/`arguments` or assignments remain on the loader for manual adaptation. Native `parser.template` must return a string synchronously and has a different context API.
-- Loader source lists with callbacks (`filter`/`urlFilter`), `scriptingEnabled`, dynamic expressions or spreads; these require manual adaptation to the native API.
+- Loader source lists with unsupported callbacks, `scriptingEnabled: false`, dynamic expressions or spreads; these require manual adaptation to the native API.
 
 ### Minification
 
