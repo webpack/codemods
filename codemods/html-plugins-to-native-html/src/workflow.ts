@@ -19,16 +19,18 @@ import {
   unquote,
   unwrapFilterCall,
 } from "@webpack/codemod-utils";
+import { collectMinification, planMinification, type Minification } from "./minification";
+import { queueTemplate, recordSource } from "./migration-state";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
 const LOADER_NAME = "html-loader";
 const HTML_SAMPLE_FILES = ["/file.html"];
+const DEFAULT_HTML_TESTS = new Set(["/\\.html$/", "/\\.html$/i"]);
 // Native HTML defaults already covered by these plugin option values.
 const HEAD_TAG_OPTIONS = new Set(["title", "meta", "favicon", "base"]);
 // Build-ergonomics options with no effect on the emitted page.
 const DROPPABLE_OPTIONS = new Set(["cache", "showErrors", "chunksSortMode"]);
-// Loader options native HTML covers on its own: `esModule` (native exports are
-// ESM) and boolean `minimize` (optimization.minimizer minifies in production).
+// Native HTML exports are ESM.
 const DROPPABLE_LOADER_OPTIONS = new Set(["esModule"]);
 // Manual migration paths appended to the review comment where one exists.
 const LOST_OPTION_HINTS = new Map([
@@ -37,7 +39,6 @@ const LOST_OPTION_HINTS = new Map([
   ["chunks", "use per-entry `html` descriptors"],
   ["excludeChunks", "use per-entry `html` descriptors"],
   ["scriptLoading", "module scripts come from experiments.outputModule"],
-  ["minify", "production HTML is minified by default; customize via optimization.minimizer (minimizer-webpack-plugin)"],
   ["templateContent", "author the page as an .html entry file"],
   ["html-loader.sources", "customize the rule's parser.sources list"],
   [
@@ -48,10 +49,7 @@ const LOST_OPTION_HINTS = new Map([
     "html-loader.postprocessor",
     "tap HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml for emitted pages",
   ],
-  ["html-loader.minimize", "customize via optimization.minimizer (minimizer-webpack-plugin)"],
 ]);
-
-type FsModule = typeof import("node:fs");
 
 // Plugin hooks renamed to the native `HtmlModulesPlugin.getCompilationHooks`
 // stage covering the same moment; arguments differ, hence the review comments.
@@ -104,6 +102,7 @@ function isRequireOf(node: SgNode<Js>, moduleName: string): boolean {
 
 // Everything one plugin instance contributes to its enclosing config.
 interface InstanceFindings {
+  minification: Minification;
   htmlProps: HtmlProp[];
   htmlFilename: string | null;
   templateValue: string | null;
@@ -119,11 +118,13 @@ interface InstanceFindings {
 interface LoaderFindings {
   lost: string[];
   parserProps: HtmlProp[];
+  minification: Minification[];
 }
 
 // Properties to add to one webpack config object once all removals are known.
 interface ConfigPlan {
   config: SgNode<Js>;
+  minification: Minification[];
   commentLines: string[];
   // Emit a global `output.html` (single-page mode; per-entry pages skip it).
   htmlEnabled: boolean;
@@ -138,94 +139,12 @@ interface ConfigPlan {
   pluginMigratedHere: boolean;
 }
 
-// Split a filename into segments, dropping Windows extended-length prefixes.
-function pathSegments(fileName: string): string[] {
-  const plain = fileName.replace(/^\\\\\?\\(UNC\\)?/, "");
-  return plain.split(/[\\/]/);
-}
-
-// Resolve a `./`/`../` request against base directory segments.
-function applyRelativePath(baseSegments: string[], relative: string): string[] | null {
-  const segments = [...baseSegments];
-  for (const part of relative.split("/")) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") {
-      if (segments.length <= 1) return null;
-      segments.pop();
-    } else {
-      segments.push(part);
-    }
-  }
-  return segments;
-}
-
-// Path forms to try against the runtime's sandboxed fs: native separators,
-// forward slashes, and cwd-relative — on Windows the sandbox normalizes
-// absolute drive paths into a form its allow-list check rejects, while a
-// relative path resolves internally and passes.
-function pathCandidates(segments: string[], separator: string): string[] {
-  const list = [segments.join(separator)];
-  const forward = segments.join("/");
-  if (!list.includes(forward)) list.push(forward);
-  const cwd = (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.();
-  if (cwd) {
-    const cwdSegments = pathSegments(cwd);
-    const isUnder =
-      cwdSegments.length > 0 &&
-      cwdSegments.length < segments.length &&
-      cwdSegments.every(
-        (segment, index) => segment.toLowerCase() === segments[index].toLowerCase(),
-      );
-    if (isUnder) list.push(segments.slice(cwdSegments.length).join("/"));
-  }
-  return list;
-}
-
-// Relative URL (forward slashes) from a directory to a file.
-function relativeUrl(fromDirSegments: string[], toSegments: string[]): string {
-  let common = 0;
-  while (
-    common < fromDirSegments.length &&
-    common < toSegments.length - 1 &&
-    fromDirSegments[common] === toSegments[common]
-  ) {
-    common += 1;
-  }
-  const ups = fromDirSegments.length - common;
-  const down = toSegments.slice(common).join("/");
-  return ups ? `${"../".repeat(ups)}${down}` : `./${down}`;
-}
-
-// Insert the script tag before `</head>` (or `</body>`), matching the
-// closing tag's indentation; append when the template has neither.
-function insertScriptTag(html: string, tag: string): string {
-  for (const marker of [/<\/head>/i, /<\/body>/i]) {
-    const match = marker.exec(html);
-    if (!match) continue;
-    const lineStart = html.lastIndexOf("\n", match.index) + 1;
-    const closingIndent = html.slice(lineStart, match.index);
-    if (!/^[ \t]*$/.test(closingIndent)) {
-      // Closing tag mid-line — insert inline right before it.
-      return `${html.slice(0, match.index)}${tag}${html.slice(match.index)}`;
-    }
-    // Indent like the previous sibling line when it sits deeper.
-    const before = html.slice(0, lineStart);
-    const prevLineStart = before.lastIndexOf("\n", before.length - 2) + 1;
-    const prevIndentMatch = /^[ \t]*/.exec(before.slice(prevLineStart));
-    const prevIndent = prevIndentMatch ? prevIndentMatch[0] : "";
-    const indent = prevIndent.length > closingIndent.length ? prevIndent : `${closingIndent}  `;
-    return `${before}${indent}${tag}\n${html.slice(lineStart)}`;
-  }
-  return `${html.replace(/\s*$/, "")}\n${tag}\n`;
-}
-
 class HtmlMigration {
   private readonly editor: ConfigEditor;
   private readonly pluginBindings;
   private readonly pluginNames: Set<string>;
   private readonly configPlans = new Map<number, ConfigPlan>();
   private readonly configFileName: string;
-  private readonly fileSystem: FsModule | null;
   private pluginMigrated = false;
   private pluginRetained = false;
   // Binding statements rewritten in place (e.g. into the `html` import).
@@ -234,7 +153,7 @@ class HtmlMigration {
   private readonly siblingBindings: ModuleBinding[] = [];
   private readonly siblingNameToModule = new Map<string, string>();
 
-  constructor(root: SgRoot<Js>, fileSystem: FsModule | null) {
+  constructor(root: SgRoot<Js>) {
     this.editor = new ConfigEditor(root.root());
     this.pluginBindings = collectModuleBindings(this.editor.rootNode, PLUGIN_MODULE);
     this.pluginNames = new Set(this.pluginBindings.map((binding) => binding.name));
@@ -247,7 +166,6 @@ class HtmlMigration {
       }
     }
     this.configFileName = root.filename();
-    this.fileSystem = fileSystem;
   }
 
   run(): string | null {
@@ -290,10 +208,39 @@ class HtmlMigration {
 
   private usesUnmappableHooks(): boolean {
     if (!this.pluginNames.size || !this.pluginHookReceivers().length) return false;
-    for (const node of this.editor.rootNode.findAll({ rule: { kind: "property_identifier" } })) {
+    for (const node of this.pluginHookProperties()) {
       if (UNMAPPABLE_HOOKS.has(node.text())) return true;
     }
     return false;
+  }
+
+  // Only keys read from this plugin's hook object belong to its API. Other
+  // plugins and ordinary application properties may use exactly the same names.
+  private pluginHookProperties(): SgNode<Js>[] {
+    const properties: SgNode<Js>[] = [];
+    for (const receiver of this.pluginHookReceivers()) {
+      const call = receiver.parent();
+      const access = call?.parent();
+      if (access?.kind() === "member_expression") {
+        const property = access.field("property");
+        if (property) properties.push(property);
+      } else if (access?.kind() === "variable_declarator") {
+        const name = access.field("name");
+        if (name?.kind() === "object_pattern") {
+          for (const member of namedChildren(name)) {
+            const key = member.kind() === "pair_pattern" ? member.field("key") : member;
+            if (key) properties.push(key);
+          }
+        } else if (name?.kind() === "identifier") {
+          for (const member of this.editor.rootNode.findAll({ rule: { kind: "member_expression" } })) {
+            if (member.field("object")?.text() !== name.text()) continue;
+            const property = member.field("property");
+            if (property) properties.push(property);
+          }
+        }
+      }
+    }
+    return properties;
   }
 
   private planFor(config: SgNode<Js>): ConfigPlan {
@@ -302,6 +249,7 @@ class HtmlMigration {
     if (!plan) {
       plan = {
         config,
+        minification: [],
         commentLines: [],
         htmlEnabled: false,
         htmlProps: [],
@@ -359,6 +307,12 @@ class HtmlMigration {
     }
     if (node.kind() !== "object" || loaderNameOf(node) !== LOADER_NAME) return;
     const optionsValue = findPair(node, "options")?.field("value");
+    const minification = collectMinification(
+      optionsValue?.kind() === "object" ? findPair(optionsValue, "minimize")?.field("value") : undefined,
+      `${LOADER_NAME}.minimize`,
+    );
+    findings.minification.push(minification);
+    findings.lost.push(...minification.lost);
     if (!optionsValue) return;
     if (optionsValue.kind() !== "object") {
       findings.lost.push(`${LOADER_NAME}.options`);
@@ -368,14 +322,7 @@ class HtmlMigration {
       const name = keyName(optionPair);
       const value = optionPair.field("value");
       if (name !== null && DROPPABLE_LOADER_OPTIONS.has(name)) continue;
-      if (name === "minimize" && value) {
-        // Custom minifier settings don't carry over; booleans do (production
-        // minification via optimization.minimizer is the native behavior).
-        if (value.kind() !== "true" && value.kind() !== "false") {
-          findings.lost.push(this.describeLost(`${LOADER_NAME}.minimize`));
-        }
-        continue;
-      }
+      if (name === "minimize") continue;
       if (name === "sources" && value) {
         // Booleans map to the rule's parser; source lists need a human.
         if (value.kind() === "true" || value.kind() === "false") {
@@ -417,7 +364,7 @@ class HtmlMigration {
       const ruleObject = pair.parent();
       if (!ruleObject || ruleObject.kind() !== "object") continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { lost: [], parserProps: [] };
+      const findings: LoaderFindings = { lost: [], parserProps: [], minification: [] };
       for (const element of elements) this.collectLoaderFindings(element, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -441,7 +388,7 @@ class HtmlMigration {
       const value = pair.field("value");
       if (!value || !this.isRemovableUseElement(value)) continue;
       if (!this.isWebpackRuleContext(pair, ruleObject.parent() ?? ruleObject)) continue;
-      const findings: LoaderFindings = { lost: [], parserProps: [] };
+      const findings: LoaderFindings = { lost: [], parserProps: [], minification: [] };
       this.collectLoaderFindings(ruleObject, findings);
       const trivial = pairsOf(ruleObject).every((rulePair) => {
         const name = keyName(rulePair);
@@ -468,12 +415,29 @@ class HtmlMigration {
     trivial: boolean;
     optionsPair: SgNode<Js> | null;
   }): void {
+    const config = findConfigObjectFor(swap.pair);
+    const experiments = config && findPair(config, "experiments")?.field("value");
+    const parser = findPair(swap.ruleObject, "parser")?.field("value");
+    if (
+      (experiments && experiments.kind() !== "object") ||
+      (swap.findings.parserProps.length && parser && parser.kind() !== "object")
+    ) return;
+    if (config) {
+      this.planFor(config).minification.push(
+        ...(swap.findings.minification.length ? swap.findings.minification : [{ html: null, lost: [] }]),
+      );
+    }
     const survives =
       !swap.trivial ||
+      !DEFAULT_HTML_TESTS.has(findPair(swap.ruleObject, "test")?.field("value")?.text() ?? "") ||
       swap.kept.length > 0 ||
       swap.findings.lost.length > 0 ||
       swap.findings.parserProps.length > 0;
     if (!survives) {
+      // Explicitly disabled HTML must be enabled even when its loader rule goes.
+      if (config && experiments && findPair(experiments, "html")) {
+        this.requireExperimentsHtml(this.planFor(config));
+      }
       this.editor.markForRemoval(cascadeRemovalTarget(swap.ruleObject));
       return;
     }
@@ -494,16 +458,24 @@ class HtmlMigration {
       const filterSuffix = keepsGuard ? swap.filterSuffix || ".filter(Boolean)" : "";
       replacement += `use: [${keptTexts.join(", ")}]${filterSuffix}${separator}`;
     }
+    const typePair = findPair(swap.ruleObject, "type");
     replacement += `type: "html"`;
+    if (typePair) this.editor.markForRemoval(typePair);
     if (swap.findings.parserProps.length) {
-      const texts = swap.findings.parserProps.map((prop) => `${prop.name}: ${prop.valueText}`);
-      replacement += `${separator}parser: { ${texts.join(", ")} }`;
+      if (parser?.kind() === "object") {
+        const missing = swap.findings.parserProps.filter((prop) => !findPair(parser, prop.name));
+        if (missing.length) {
+          this.editor.insertIntoObject(parser, () => missing.map((prop) => `${prop.name}: ${prop.valueText}`));
+        }
+      } else if (!parser) {
+        const texts = swap.findings.parserProps.map((prop) => `${prop.name}: ${prop.valueText}`);
+        replacement += `${separator}parser: { ${texts.join(", ")} }`;
+      }
     }
     this.editor.replace(swap.pair, replacement);
     if (swap.optionsPair) this.editor.markForRemoval(swap.optionsPair);
     // A surviving rule that matches `.html` turns the "auto" default off.
     if (!ruleMatchesFiles(swap.ruleObject, HTML_SAMPLE_FILES)) return;
-    const config = findConfigObjectFor(swap.pair);
     if (config) this.requireExperimentsHtml(this.planFor(config));
   }
 
@@ -543,12 +515,29 @@ class HtmlMigration {
       if (instantiation) instances.push({ element, instantiation });
     }
     if (!instances.length) return;
+    // A computed destination cannot safely receive the native settings.
+    if (["output", "experiments"].some((key) => {
+      const destination = findPair(configObject, key)?.field("value");
+      return destination && destination.kind() !== "object";
+    })) {
+      this.pluginRetained = true;
+      return;
+    }
     // Every options argument must be an object literal to be understood.
     const optionObjects: (SgNode<Js> | undefined)[] = [];
     for (const { instantiation } of instances) {
       const argumentsNode = instantiation.field("arguments");
       const optionsObject = argumentsNode ? namedChildren(argumentsNode)[0] : undefined;
-      if (optionsObject && optionsObject.kind() !== "object") {
+      if (optionsObject && (
+        optionsObject.kind() !== "object" ||
+        namedChildren(optionsObject).some((child) => child.kind() !== "pair" && child.kind() !== "comment")
+      )) {
+        this.pluginRetained = true;
+        return;
+      }
+      const template = optionsObject && findPair(optionsObject, "template")?.field("value");
+      const entry = findPair(configObject, "entry")?.field("value");
+      if (template && (template.kind() !== "string" || (entry && !this.replaceableEntryValue(entry)))) {
         this.pluginRetained = true;
         return;
       }
@@ -762,6 +751,7 @@ class HtmlMigration {
     }
     const plan = this.planFor(configObject);
     const pages: { entryDescriptor: SgNode<Js>; htmlValue: string }[] = [];
+    const minification: Minification[] = [];
     const lost: string[] = [];
     let moduleScripts = false;
     for (const options of optionObjects) {
@@ -783,6 +773,7 @@ class HtmlMigration {
         return;
       }
       const findings = this.collectFindings(options, MULTI_PAGE_SKIPPED_OPTIONS);
+      minification.push(findings.minification);
       // The page filename must fit the shared `htmlFilename: "[name].html"`.
       const filenameValue = findPair(options, "filename")?.field("value");
       if (filenameValue) {
@@ -798,6 +789,12 @@ class HtmlMigration {
         : "true";
       pages.push({ entryDescriptor, htmlValue });
     }
+    // Per-page minification cannot be represented by a compilation-wide option.
+    if (new Set(minification.map((request) => request.html ?? "{}")).size > 1) {
+      this.pluginRetained = true;
+      return;
+    }
+    plan.minification.push(...minification);
     const siblingRemoved = this.processSiblings(
       elements,
       instances.map((instance) => instance.element),
@@ -843,19 +840,25 @@ class HtmlMigration {
     for (const node of receivers) {
       this.editor.replace(node, `${nativeReceiver}.getCompilationHooks`);
     }
-    const rootNode = this.editor.rootNode;
     // One review comment per statement holding a renamed tap.
     const commentedStatements = new Set<string>();
-    for (const property of rootNode.findAll({ rule: { kind: "property_identifier" } })) {
+    for (const property of this.pluginHookProperties()) {
       const renamed = HOOK_RENAMES.get(property.text());
       if (!renamed) continue;
-      this.editor.replace(property, renamed);
+      this.editor.replace(property, property.kind() === "shorthand_property_identifier_pattern"
+        ? `${renamed}: ${property.text()}` : renamed);
       const statement = this.statementOf(property);
       const review = HOOK_REVIEW_COMMENTS.get(renamed);
       if (!statement || !review) continue;
       const key = `${statement.range().start.index}:${renamed}`;
       if (commentedStatements.has(key)) continue;
       commentedStatements.add(key);
+      if (receivers.some((receiver) => receiver.range().start.index === statement.range().start.index)) {
+        // An insertion at the same position as the receiver replacement would
+        // be swallowed by commitEdits. A trailing comment avoids the overlap.
+        this.editor.insertAfter(statement, ` /* Review: ${review} */`);
+        continue;
+      }
       const lineStart =
         this.editor.source.lastIndexOf("\n", statement.range().start.index - 1) + 1;
       const indent = lineIndent(this.editor.source, statement.range().start.index);
@@ -864,13 +867,6 @@ class HtmlMigration {
         endPos: lineStart,
         insertedText: `${indent}// Review: ${review}\n`,
       });
-    }
-    for (const shorthand of rootNode.findAll({
-      rule: { kind: "shorthand_property_identifier_pattern" },
-    })) {
-      const renamed = HOOK_RENAMES.get(shorthand.text());
-      // Keep the local variable name; only the destructured key changes.
-      if (renamed) this.editor.replace(shorthand, `${renamed}: ${shorthand.text()}`);
     }
   }
 
@@ -922,6 +918,10 @@ class HtmlMigration {
     skippedOptions?: Set<string>,
   ): InstanceFindings {
     const findings: InstanceFindings = {
+      minification: collectMinification(
+        optionsObject ? findPair(optionsObject, "minify")?.field("value") : undefined,
+        "minify",
+      ),
       htmlProps: [],
       htmlFilename: null,
       templateValue: null,
@@ -1007,9 +1007,7 @@ class HtmlMigration {
         }
         break;
       case "minify":
-        if (value.kind() !== "true" && literal !== "auto") {
-          findings.lost.push(this.describeLost(name));
-        }
+        findings.lost.push(...findings.minification.lost);
         break;
       case "chunks":
         if (literal !== "all") findings.lost.push(this.describeLost(name));
@@ -1080,17 +1078,17 @@ class HtmlMigration {
   }
 
   // The template becomes the entry (native HTML entry point); the previous
-  // entry must be referenced from the template with a `<script>` tag — added
-  // to the template file directly when it can be found on disk.
+  // entry must be referenced from the template with a `<script>` tag. The HTML
+  // workflow step applies that edit through the runner using shared state.
   private migrateEntry(configObject: SgNode<Js>, findings: InstanceFindings): void {
     const templateValue = findings.templateValue as string;
     const entryPair = findPair(configObject, "entry");
     if (!entryPair) {
-      const injected = this.injectScriptIntoTemplate(templateValue, "./src/index.js");
+      const injected = queueTemplate(this.configFileName, unquote(templateValue), "./src/index.js");
       findings.pendingEntry = {
         text: templateValue,
         comment: injected
-          ? `The template is now the entry: it must load the previous default entry via <script defer src="${injected}"></script> (added automatically when the template was found on disk)`
+          ? `The template is now the entry: it must load the previous default entry via <script defer src="${injected}"></script> (added by the HTML workflow step when the template is included)`
           : `The template is now the entry: reference the previous entry (webpack's default is ./src/index.js) from it, e.g. <script defer src="./src/index.js"></script>`,
       };
       return;
@@ -1101,9 +1099,9 @@ class HtmlMigration {
       findings.lost.push("template (make the template an .html entry that loads your JS)");
       return;
     }
-    const injected = this.injectScriptIntoTemplate(templateValue, unquote(replaceable.text()));
+    const injected = queueTemplate(this.configFileName, unquote(templateValue), unquote(replaceable.text()));
     const comment = injected
-      ? `The template is now the entry: it must load the previous entry via <script defer src="${injected}"></script> (added automatically when the template was found on disk)`
+      ? `The template is now the entry: it must load the previous entry via <script defer src="${injected}"></script> (added by the HTML workflow step when the template is included)`
       : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
@@ -1117,71 +1115,6 @@ class HtmlMigration {
     } else {
       this.editor.replace(replaceable, `/* ${comment} */ ${findings.templateValue}`);
     }
-  }
-
-  // Add a `<script defer>` tag loading the previous entry to the template file
-  // itself. Returns the tag's `src` (relative to the template) on success, or
-  // when the template already loads it; `null` falls back to a review comment
-  // (no filesystem access, non-relative paths, or files not found on disk).
-  private injectScriptIntoTemplate(templateQuoted: string, entryRel: string): string | null {
-    if (!this.configFileName) return null;
-    const templateRel = unquote(templateQuoted);
-    if (!templateRel.startsWith(".") || !entryRel.startsWith(".")) return null;
-    // Paths are handled as segment arrays — the runtime's `path` module
-    // mangles Windows extended-length (`\\?\`) filenames.
-    const configSegments = pathSegments(this.configFileName);
-    const separator = this.configFileName.includes("\\") ? "\\" : "/";
-    configSegments.pop();
-    const templateSegments = applyRelativePath(configSegments, templateRel);
-    const entrySegments = applyRelativePath(configSegments, entryRel);
-    if (!templateSegments || !entrySegments) return null;
-    const scriptSrc = relativeUrl(templateSegments.slice(0, -1), entrySegments);
-    // Best effort: edit the template in place. The runtime's sandboxed fs
-    // denies transform reads on Windows, so failure just leaves the edit to
-    // the review comment (which carries the exact tag either way).
-    this.tryEditTemplate(templateSegments, separator, scriptSrc);
-    return scriptSrc;
-  }
-
-  private tryEditTemplate(
-    templateSegments: string[],
-    separator: string,
-    scriptSrc: string,
-  ): void {
-    const fs = this.fileSystem;
-    if (!fs) return;
-    try {
-      const template = this.readFirst(fs, pathCandidates(templateSegments, separator));
-      if (!template) return;
-      const html = template.content;
-      // Already loaded (e.g. a re-run) — nothing to write.
-      const sourcePattern = /<script\b[^>]*\bsrc\s*=\s*["']([^"']*)["']/gi;
-      for (let match = sourcePattern.exec(html); match; match = sourcePattern.exec(html)) {
-        const existing = match[1].startsWith(".") ? match[1] : `./${match[1]}`;
-        if (existing === scriptSrc) return;
-      }
-      fs.writeFileSync(
-        template.path,
-        insertScriptTag(html, `<script defer src="${scriptSrc}"></script>`),
-      );
-    } catch {
-      // Unreachable template — the review comment covers the manual step.
-    }
-  }
-
-  // First candidate form the sandboxed runtime lets us read.
-  private readFirst(
-    fs: FsModule,
-    candidates: string[],
-  ): { path: string; content: string } | null {
-    for (const candidate of candidates) {
-      try {
-        return { path: candidate, content: fs.readFileSync(candidate, "utf8") };
-      } catch {
-        // Try the next path form.
-      }
-    }
-    return null;
   }
 
   // A string entry value the template path can take over: the value itself, a
@@ -1205,6 +1138,7 @@ class HtmlMigration {
 
   private mergeIntoPlan(configObject: SgNode<Js>, findings: InstanceFindings): void {
     const plan = this.planFor(configObject);
+    plan.minification.push(findings.minification);
     plan.pluginMigratedHere = true;
     this.requireExperimentsHtml(plan);
     if (findings.lost.length) {
@@ -1224,6 +1158,8 @@ class HtmlMigration {
   private planConfigInsertions(): void {
     for (const plan of this.configPlans.values()) {
       const topProperties: ((indent: string, unit: string) => string)[] = [];
+      const optimization = planMinification(this.editor, plan.config, plan.minification, plan.commentLines);
+      if (optimization) topProperties.push(() => optimization);
       const pendingEntry = plan.pendingEntry;
       if (pendingEntry) {
         topProperties.push(
@@ -1232,6 +1168,15 @@ class HtmlMigration {
       }
       const outputProps: HtmlProp[] = [];
       const htmlProps = dedupeProps(plan.htmlProps);
+      const existingOutput = findPair(plan.config, "output")?.field("value");
+      const existingHtml = existingOutput?.kind() === "object"
+        ? findPair(existingOutput, "html")?.field("value") : undefined;
+      if (existingHtml?.kind() === "object") {
+        const missing = htmlProps.filter((prop) => !findPair(existingHtml, prop.name));
+        if (missing.length) {
+          this.editor.insertIntoObject(existingHtml, () => missing.map((prop) => `${prop.name}: ${prop.valueText}`));
+        }
+      }
       if (plan.htmlEnabled || htmlProps.length) {
         outputProps.push({
           name: "html",
@@ -1256,6 +1201,9 @@ class HtmlMigration {
           topProperties,
         );
       }
+      if (!outputProps.length && !plan.experimentsProps.length && plan.commentLines.length) {
+        this.insertReviewComments(plan.config, plan.commentLines);
+      }
       if (topProperties.length) {
         // A fully-emptied config keeps its braces open for these properties.
         this.editor.keepBracesOpen(plan.config);
@@ -1264,6 +1212,16 @@ class HtmlMigration {
         );
       }
     }
+  }
+
+  private insertReviewComments(node: SgNode<Js>, lines: string[]): void {
+    if (!lines.length) return;
+    const position = node.range().start.index;
+    this.editor.addEdit({
+      startPos: position,
+      endPos: position,
+      insertedText: `/* ${lines.join("; ").replace(/\*\//g, "* /")} */ `,
+    });
   }
 
   // Insert props into the config's `key` object, creating it when absent; an
@@ -1278,12 +1236,29 @@ class HtmlMigration {
   ): void {
     const withComments = (propertyText: string, indent: string, first: boolean): string => {
       if (!first || !commentLines.length) return propertyText;
+      if (!config.text().includes("\n")) {
+        return `/* ${commentLines.join("; ").replace(/\*\//g, "* /")} */ ${propertyText}`;
+      }
       return `${commentLines.map((line) => `// ${line}\n${indent}`).join("")}${propertyText}`;
     };
     const value = findPair(config, key)?.field("value");
     if (value && value.kind() === "object") {
+      for (const prop of props) {
+        const existing = findPair(value, prop.name)?.field("value");
+        if (!existing) continue;
+        if (
+          (key === "experiments" && (prop.name === "html" || prop.name === "outputModule")) ||
+          (key === "output" && prop.name === "module") ||
+          (key === "output" && prop.name === "html" && (existing.kind() === "false" || existing.kind() === "true"))
+        ) {
+          this.editor.replace(existing, prop.valueText);
+        }
+      }
       const missing = props.filter((prop) => !findPair(value, prop.name));
-      if (!missing.length) return;
+      if (!missing.length) {
+        this.insertReviewComments(value, commentLines);
+        return;
+      }
       this.editor.insertIntoObject(value, (indent) =>
         missing.map((prop, index) =>
           withComments(`${prop.name}: ${prop.valueText}`, indent, index === 0),
@@ -1302,13 +1277,9 @@ class HtmlMigration {
 }
 
 async function transform(root: SgRoot<Js>): Promise<string | null> {
-  let fileSystem: FsModule | null = null;
-  try {
-    fileSystem = await import("node:fs");
-  } catch {
-    // No filesystem access — template edits fall back to review comments.
-  }
-  return new HtmlMigration(root, fileSystem).run();
+  const result = new HtmlMigration(root).run();
+  recordSource(root.filename(), result ?? root.root().text());
+  return result;
 }
 
 export default transform;

@@ -3,8 +3,7 @@ const { html } = require("webpack");
 class MyPlugin {
   apply(compiler) {
     compiler.hooks.compilation.tap("MyPlugin", (compilation) => {
-      // Review: transformHtml receives (html, { outputName }) and must return the html string
-      html.HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml.tapAsync("MyPlugin", (data, callback) => callback(null, data));
+      html.HtmlModulesPlugin.getCompilationHooks(compilation).transformHtml.tapAsync("MyPlugin", (data, callback) => callback(null, data)); /* Review: transformHtml receives (html, { outputName }) and must return the html string */
     });
   }
 }
