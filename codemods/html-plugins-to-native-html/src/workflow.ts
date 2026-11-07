@@ -21,7 +21,9 @@ import {
 } from "@webpack/codemod-utils";
 import { collectMinification, planMinification, type Minification } from "./minification";
 import { queueTemplate, recordSource } from "./migration-state";
-import { isIdentityCallback, nativeSources, nativeTemplate } from "./loader-options";
+import { isIdentityCallback } from "./loaders/callbacks";
+import { nativeSources } from "./loaders/sources";
+import { nativeTemplate } from "./loaders/template";
 import { templateScriptTag } from "./templates";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
