@@ -73,7 +73,10 @@ export function addTemplateScripts(root: SgRoot<Html>, scripts: TemplateScript[]
         continue;
       }
 
-      const key = normalizeFilename(value.text().replace(/^["']|["']$/g, ""));
+      const content = value.is("quoted_attribute_value")
+        ? value.children().find((child) => child.is("attribute_value"))
+        : value;
+      const key = normalizeFilename(content?.text() ?? "");
 
       existing.add(key);
 
@@ -105,9 +108,11 @@ export function addTemplateScripts(root: SgRoot<Html>, scripts: TemplateScript[]
 
   const tags = missing.map(templateScriptTag);
   const endings = node.findAll({ rule: { kind: "end_tag" } });
-  const closing =
-    endings.find((tag) => /^<\/head\s*>$/i.test(tag.text())) ??
-    endings.find((tag) => /^<\/body\s*>$/i.test(tag.text()));
+  const closingTag = (name: string) =>
+    endings.find((tag) =>
+      tag.children().some((child) => child.is("tag_name") && child.text().toLowerCase() === name),
+    );
+  const closing = closingTag("head") ?? closingTag("body");
   let position = source.length;
   let text = `${source.endsWith("\n") || !source ? "" : eol}${tags.join(eol)}${eol}`;
 

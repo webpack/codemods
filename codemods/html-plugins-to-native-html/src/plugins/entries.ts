@@ -79,7 +79,7 @@ export function migrateEntry(
         chunkName,
       })} (added by the HTML workflow step when the template is included)`
     : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
-  const multiline = configObject.text().includes("\n");
+  const multiline = configObject.range().start.line !== configObject.range().end.line;
 
   if (multiline) {
     const indent = lineIndent(editor.source, entryPair.range().start.index);
@@ -124,7 +124,13 @@ export function replaceableEntryValue(entryValue: SgNode<Js>): SgNode<Js> | null
 
     const key = entryPairs[0].field("key");
 
-    if (!key || key.is("computed_property_name") || key.text().includes("\\")) {
+    if (
+      !key ||
+      key.is("computed_property_name") ||
+      key.findAll({ rule: { kind: "escape_sequence" } }).length ||
+      // Escaped identifiers are leaf tokens; the parser exposes no escape child.
+      (key.is("property_identifier") && key.text().includes("\\"))
+    ) {
       return null;
     }
 

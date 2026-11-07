@@ -274,7 +274,7 @@ export class ConfigPlans {
         return propertyText;
       }
 
-      if (!config.text().includes("\n")) {
+      if (config.range().start.line === config.range().end.line) {
         return `/* ${commentLines.join("; ").replace(/\*\//g, "* /")} */ ${propertyText}`;
       }
 
