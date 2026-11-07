@@ -54,17 +54,19 @@ Both plugin `minify` and loader `minimize` accept these translations:
 | --- | --- |
 | `false` | `html: false` (JS/CSS keep their settings) |
 | `collapseWhitespace`, `collapseBooleanAttributes`, `minifyConditionalComments`, `removeEmptyAttributes`, `removeEmptyElements`, `removeRedundantAttributes`, `sortAttributes` | Same boolean property in `html` |
-| `removeComments` | Inverted `html.comments` |
+| `removeComments` | Inverted `html.comments`; preserving comments also disables extraction to a license file |
+| `ignoreCustomComments: [RegExp, …]` with `removeComments: true` | A self-contained `html.comments` predicate and `html.extractComments: false` |
 | `removeAttributeQuotes` | `html.normalizeAttributeQuotes` |
 | `removeOptionalTags` | Both `html.removeOptionalTags` and `html.removeImpliedTags` |
 | `conservativeCollapse: true` | Covered by native whitespace handling |
+| `conservativeCollapse: false` with `collapseWhitespace: true` | `html.collapseWhitespace: "all"` |
 
 For example, `new HtmlWebpackPlugin({ minify: { removeComments: false, collapseWhitespace: false } })` adds:
 
 ```js
 optimization: {
   minimizeOptions: {
-    html: { comments: true, collapseWhitespace: false },
+    html: { comments: true, extractComments: false, collapseWhitespace: false },
   },
 },
 ```

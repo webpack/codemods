@@ -1,3 +1,3 @@
 module.exports = {
-  optimization: { minimizeOptions: { html: { comments: true }, javascript: false } },
+  optimization: { minimizeOptions: { html: { comments: true, extractComments: false }, javascript: false } },
 };

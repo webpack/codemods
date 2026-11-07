@@ -31,10 +31,20 @@ export function collectMinification(value: SgNode<Js> | null | undefined, name: 
     return result;
   }
   const props = new Map<string, string>();
+  const removeComments = findPair(value, "removeComments")?.field("value");
+  const ignoredComments = findPair(value, "ignoreCustomComments")?.field("value");
   for (const child of namedChildren(value)) {
     if (child.kind() === "comment") continue;
     const key = keyName(child);
     const option = child.field("value");
+    if (key === "ignoreCustomComments" && option) {
+      if (removeComments?.kind() === "false") continue;
+      const patterns = option.kind() === "array" ? namedChildren(option).filter((node) => node.kind() !== "comment") : null;
+      if (!patterns || patterns.some((node) => node.kind() !== "regex")) {
+        result.lost.push(`${name}.${key} (configure optimization.minimizeOptions.html.comments)`);
+      }
+      continue;
+    }
     if (!key || !option || (option.kind() !== "true" && option.kind() !== "false")) {
       result.lost.push(`${name}.${key ?? "options"} (configure optimization.minimizeOptions.html)`);
       continue;
@@ -44,16 +54,28 @@ export function collectMinification(value: SgNode<Js> | null | undefined, name: 
       props.set(key, option.text());
     } else if (key === "removeComments") {
       props.set("comments", enabled ? "false" : "true");
+      // Keeping a comment in the HTML also means not moving it to LICENSE.txt.
+      if (!enabled) props.set("extractComments", "false");
     } else if (key === "removeAttributeQuotes") {
       props.set("normalizeAttributeQuotes", option.text());
     } else if (key === "removeOptionalTags") {
       props.set("removeOptionalTags", option.text());
       props.set("removeImpliedTags", option.text());
     } else if (key === "conservativeCollapse") {
-      // webpack's `true` already uses conservative whitespace collapsing.
-      if (!enabled) result.lost.push(`${name}.${key} (review collapseWhitespace: "all")`);
+      // Applied below after collapseWhitespace so source key order is irrelevant.
     } else {
       result.lost.push(`${name}.${key} (configure optimization.minimizeOptions.html)`);
+    }
+  }
+  if (props.get("collapseWhitespace") === "true" && findPair(value, "conservativeCollapse")?.field("value")?.kind() === "false") {
+    props.set("collapseWhitespace", '"all"');
+  }
+  if (ignoredComments?.kind() === "array" && removeComments?.kind() === "true") {
+    const patterns = namedChildren(ignoredComments).filter((node) => node.kind() !== "comment");
+    if (patterns.every((node) => node.kind() === "regex")) {
+      const parameter = /\.[cm]?tsx?$/.test(value.getRoot().filename()) ? "comment: string" : "comment";
+      props.set("comments", patterns.length ? `(${parameter}) => [${patterns.map((node) => node.text()).join(", ")}].some((pattern) => pattern.test(comment))` : "false");
+      props.set("extractComments", "false");
     }
   }
   if (props.size) {
