@@ -147,6 +147,7 @@ class HtmlMigration {
   private readonly configFileName: string;
   private pluginMigrated = false;
   private pluginRetained = false;
+  private readonly blockedConfigs = new Set<number>();
   // Binding statements rewritten in place (e.g. into the `html` import).
   private readonly repurposedStatements = new Set<number>();
 
@@ -180,6 +181,17 @@ class HtmlMigration {
       if (name === "use") usePairs.push(pair);
       else if (name === "loader") loaderPairs.push(pair);
       else if (name === "plugins") pluginsPairs.push(pair);
+    }
+    // Native favicon links do not generate image variants or replace the
+    // companion's html-webpack-plugin hooks. Preserve the owning config.
+    for (const pair of pluginsPairs) {
+      const value = unwrapFilterCall(pair.field("value") ?? pair);
+      if (value.kind() !== "array") continue;
+      if (namedChildren(value).some((element) => this.siblingInstantiationOf(element)?.module === FAVICONS_MODULE)) {
+        const config = pair.parent();
+        if (config) this.blockedConfigs.add(config.range().start.index);
+        this.pluginRetained = true;
+      }
     }
     this.transformRules(usePairs, loaderPairs);
     for (const pair of pluginsPairs) this.transformPluginsPair(pair);
@@ -416,6 +428,7 @@ class HtmlMigration {
     optionsPair: SgNode<Js> | null;
   }): void {
     const config = findConfigObjectFor(swap.pair);
+    if (config && this.blockedConfigs.has(config.range().start.index)) return;
     const experiments = config && findPair(config, "experiments")?.field("value");
     const parser = findPair(swap.ruleObject, "parser")?.field("value");
     if (
@@ -506,6 +519,7 @@ class HtmlMigration {
   private transformPluginsPair(pluginsPair: SgNode<Js>): void {
     const configObject = pluginsPair.parent();
     if (!configObject || configObject.kind() !== "object") return;
+    if (this.blockedConfigs.has(configObject.range().start.index)) return;
     const value = unwrapFilterCall(pluginsPair.field("value") ?? pluginsPair);
     if (value.kind() !== "array") return;
     const elements = namedChildren(value);
@@ -630,10 +644,12 @@ class HtmlMigration {
     }
     if (element.kind() !== "new_expression") return null;
     const constructorNode = element.field("constructor");
-    const module = constructorNode
-      ? this.siblingNameToModule.get(constructorNode.text())
-      : undefined;
-    return constructorNode && module ? { instantiation: element, module } : null;
+    if (!constructorNode) return null;
+    const inner = constructorNode.kind() === "parenthesized_expression"
+      ? namedChildren(constructorNode)[0] : constructorNode;
+    const module = this.siblingNameToModule.get(constructorNode.text())
+      ?? SIBLING_PLUGIN_MODULES.find((name) => inner && isRequireOf(inner, name));
+    return module ? { instantiation: element, module } : null;
   }
 
   // Companion plugins piggybacked on html-webpack-plugin, so they only migrate
@@ -700,21 +716,7 @@ class HtmlMigration {
         }
       }
       if (enabled) props.push({ name: "integrity", valueText: integrity });
-    } else {
-      // favicons-webpack-plugin — only the logo path maps (native `favicon`).
-      const argument = args[0];
-      if (argument && argument.kind() === "string") {
-        props.push({ name: "favicon", valueText: argument.text() });
-      } else if (argument && argument.kind() === "object") {
-        const logo = findPair(argument, "logo")?.field("value");
-        if (!logo || logo.kind() !== "string") return false;
-        props.push({ name: "favicon", valueText: logo.text() });
-        for (const optionPair of pairsOf(argument)) {
-          const name = keyName(optionPair);
-          if (name !== "logo") lost.push(name ?? "options");
-        }
-      } else return false;
-    }
+    } else return false;
     for (const prop of props) {
       if (mode === "multi") {
         // A global `output.html` would generate a page for every entry.
