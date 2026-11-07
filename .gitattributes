@@ -3,3 +3,4 @@
 
 # CRLF fixtures exercise the editor's EOL detection — keep their bytes as-is.
 codemods/*/tests/crlf/* -text
+codemods/html-plugins-to-native-html/tests/template-chunks/crlf/* -text

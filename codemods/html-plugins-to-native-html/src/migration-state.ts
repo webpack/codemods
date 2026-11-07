@@ -4,6 +4,11 @@ import { acquireLock, getState, setState } from "codemod:workflow";
 const SOURCES_KEY = "webpack-native-html:sources";
 const TEMPLATES_KEY = "webpack-native-html:templates";
 
+export interface TemplateScript {
+  src: string;
+  chunkName?: string;
+}
+
 export const HTML_PACKAGES = [
   "html-webpack-plugin",
   "html-loader",
@@ -54,7 +59,7 @@ export function remainingPackages(manifestFilename: string): Set<string> | null 
   return remaining;
 }
 
-export function queueTemplate(configFilename: string, template: string, entry: string): string | null {
+export function queueTemplate(configFilename: string, template: string, entry: string, chunkName: string): string | null {
   if (!template.startsWith(".") || !entry.startsWith(".")) return null;
   const directory = directoryOf(configFilename);
   const templateFilename = normalizeFilename(`${directory}/${template}`);
@@ -67,8 +72,12 @@ export function queueTemplate(configFilename: string, template: string, entry: s
   const script = `${up ? "../".repeat(up) : "./"}${to.slice(common).join("/")}`;
   const release = acquireLock(TEMPLATES_KEY);
   try {
-    const templates = getState<Record<string, string[]>>(TEMPLATES_KEY) ?? {};
-    templates[templateFilename] = [...new Set([...(templates[templateFilename] ?? []), script])].sort();
+    const templates = getState<Record<string, TemplateScript[]>>(TEMPLATES_KEY) ?? {};
+    const scripts = templates[templateFilename] ?? [];
+    if (!scripts.some((item) => item.src === script && item.chunkName === chunkName)) {
+      scripts.push({ src: script, chunkName });
+    }
+    templates[templateFilename] = scripts.sort((a, b) => a.src.localeCompare(b.src) || (a.chunkName ?? "").localeCompare(b.chunkName ?? ""));
     setState(TEMPLATES_KEY, templates);
   } finally {
     release();
@@ -76,6 +85,6 @@ export function queueTemplate(configFilename: string, template: string, entry: s
   return script;
 }
 
-export function scriptsForTemplate(filename: string): string[] {
-  return getState<Record<string, string[]>>(TEMPLATES_KEY)?.[normalizeFilename(filename)] ?? [];
+export function scriptsForTemplate(filename: string): TemplateScript[] {
+  return getState<Record<string, TemplateScript[]>>(TEMPLATES_KEY)?.[normalizeFilename(filename)] ?? [];
 }

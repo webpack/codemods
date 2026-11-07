@@ -35,6 +35,10 @@ test("workflow applies HTML and dependency edits through the runner, without fs 
 
     runWorkflow(target);
     const html = readFileSync(path.join(target, "src/index.html"), "utf8");
+    assert.match(html, /<!-- webpackChunkName: "main" -->/);
+    const namedHtml = readFileSync(path.join(target, "packages/named/index.html"), "utf8");
+    assert.match(namedHtml, /<!-- webpackChunkName: "app" -->/);
+    assert.equal(namedHtml.match(/<script/g)?.length, 1);
     assert.equal(html.match(/<script defer src="\.\/index.js"><\/script>/g)?.length, 1);
     const config = readFileSync(path.join(target, "webpack.config.cjs"), "utf8");
     assert.match(config, /entry: "\.\/src\/index.html"/);

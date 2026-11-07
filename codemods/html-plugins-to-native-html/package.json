@@ -8,7 +8,7 @@
     "test": "npm run test:workflow && npm run test:templates && npm run test:dependencies && npm run test:integration",
     "test:workflow": "npx codemod jssg test -l typescript ./src/workflow.ts",
     "test:dependencies": "npx codemod jssg test -l json ./tests/remove-dependencies.ts ./tests/remove-dependencies",
-    "test:templates": "npx codemod jssg test -l html ./tests/templates.ts ./tests/templates",
+    "test:templates": "npx codemod jssg test -l html ./tests/templates.ts ./tests/templates && npx codemod jssg test -l html ./tests/template-chunks.ts ./tests/template-chunks",
     "test:integration": "node --test ./tests/workflow.test.mjs"
   },
   "repository": {

@@ -22,6 +22,7 @@ import {
 import { collectMinification, planMinification, type Minification } from "./minification";
 import { queueTemplate, recordSource } from "./migration-state";
 import { nativeSources, nativeTemplate } from "./loader-options";
+import { templateScriptTag } from "./templates";
 
 const PLUGIN_MODULE = "html-webpack-plugin";
 const LOADER_NAME = "html-loader";
@@ -1134,11 +1135,11 @@ class HtmlMigration {
     const templateValue = findings.templateValue as string;
     const entryPair = findPair(configObject, "entry");
     if (!entryPair) {
-      const injected = queueTemplate(this.configFileName, unquote(templateValue), "./src/index.js");
+      const injected = queueTemplate(this.configFileName, unquote(templateValue), "./src/index.js", "main");
       findings.pendingEntry = {
         text: templateValue,
         comment: injected
-          ? `The template is now the entry: it must load the previous default entry via <script defer src="${injected}"></script> (added by the HTML workflow step when the template is included)`
+          ? `The template is now the entry: it must load the previous default entry via ${templateScriptTag({ src: injected, chunkName: "main" })} (added by the HTML workflow step when the template is included)`
           : `The template is now the entry: reference the previous entry (webpack's default is ./src/index.js) from it, e.g. <script defer src="./src/index.js"></script>`,
       };
       return;
@@ -1149,9 +1150,10 @@ class HtmlMigration {
       findings.lost.push("template (make the template an .html entry that loads your JS)");
       return;
     }
-    const injected = queueTemplate(this.configFileName, unquote(templateValue), unquote(replaceable.text()));
+    const chunkName = entryValue?.kind() === "object" ? keyName(pairsOf(entryValue)[0]) ?? "main" : "main";
+    const injected = queueTemplate(this.configFileName, unquote(templateValue), unquote(replaceable.text()), chunkName);
     const comment = injected
-      ? `The template is now the entry: it must load the previous entry via <script defer src="${injected}"></script> (added by the HTML workflow step when the template is included)`
+      ? `The template is now the entry: it must load the previous entry via ${templateScriptTag({ src: injected, chunkName })} (added by the HTML workflow step when the template is included)`
       : `The template is now the entry: reference the previous entry from it, e.g. <script defer src=${replaceable.text()}></script>`;
     const multiline = configObject.text().includes("\n");
     if (multiline) {
@@ -1163,7 +1165,7 @@ class HtmlMigration {
       });
       this.editor.replace(replaceable, findings.templateValue as string);
     } else {
-      this.editor.replace(replaceable, `/* ${comment} */ ${findings.templateValue}`);
+      this.editor.replace(replaceable, `/* ${comment.replace(/\*\//g, "* /")} */ ${findings.templateValue}`);
     }
   }
 
@@ -1178,6 +1180,9 @@ class HtmlMigration {
     if (entryValue.kind() === "object") {
       const entryPairs = pairsOf(entryValue);
       if (entryPairs.length !== 1) return null;
+      if (namedChildren(entryValue).some((child) => child.kind() !== "pair" && child.kind() !== "comment")) return null;
+      const key = entryPairs[0].field("key");
+      if (!key || key.kind() === "computed_property_name" || key.text().includes("\\")) return null;
       const inner = entryPairs[0].field("value");
       return inner && inner.kind() === "string" ? inner : null;
     }

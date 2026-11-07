@@ -2,7 +2,7 @@
 
 Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to webpack's native HTML support (`experiments.html` + `output.html`).
 
-> Requires **webpack >= 5.111.0**: the transform uses native HTML generation and the built-in HTML minifier, configured through `optimization.minimizeOptions.html`.
+> Requires **webpack >= 5.112.0**: the transform uses native HTML generation and the built-in HTML minifier, configured through `optimization.minimizeOptions.html`, and HTML chunk names introduced in 5.112.
 
 ## What it does
 
@@ -25,7 +25,7 @@ Migrates webpack configurations from `html-webpack-plugin` and `html-loader` to 
 
 ### `template`
 
-`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The configuration transform makes the template the entry and records the previous JS entry in workflow state. A separate HTML AST transform adds the corresponding `<script defer src="…"></script>` before `</head>` (or `</body>`), preserving line endings and avoiding duplicate script references. Comments containing script markup do not count as existing scripts.
+`output.html` generates each page from scratch, so an authored template maps to webpack's other native mode instead: the **HTML entry point**. The configuration transform makes the template the entry and records the previous JS entry in workflow state. A separate HTML AST transform adds the corresponding `<script defer src="…"></script>` before `</head>` (or `</body>`), preserving line endings and avoiding duplicate script references. Comments containing script markup do not count as existing scripts. A `webpackChunkName` comment preserves the previous entry name (`main` for unnamed entries). Existing matching scripts are annotated without duplication, while existing webpack magic comments take precedence. If several configs request different names for the same script in a shared template, webpack's default naming is kept for manual review.
 
 All changes are returned to the codemod runner; the transforms do not use filesystem APIs. This keeps template changes inside the normal workflow and makes `--dry-run` safe. Only `.html` templates included in the workflow are edited. The configuration keeps a review comment with the script reference for missing/excluded templates and when running the configuration transform alone. Since head tags are only injected into webpack-generated pages, `title`/`meta`/`favicon`/`base` are flagged to be added to the template instead.
 
@@ -119,7 +119,7 @@ module.exports = {
   experiments: {
     html: true,
   },
-  // The template is now the entry: it must load the previous entry via <script defer src="./index.js"></script> (added by the HTML workflow step when the template is included)
+  // The template is now the entry: it must load the previous entry via <!-- webpackChunkName: "main" --> <script defer src="./index.js"></script> (added by the HTML workflow step when the template is included)
   entry: "./src/index.html",
   output: {
     htmlFilename: "index.html",
