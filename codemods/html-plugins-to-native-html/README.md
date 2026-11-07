@@ -102,51 +102,45 @@ The workflow runs the configuration, HTML-template, and dependency transforms in
 
 ## Example
 
-Before:
-
-```js
-const HtmlWebpackPlugin = require("html-webpack-plugin");
-
-module.exports = {
-  entry: "./src/index.js",
-  plugins: [
-    new HtmlWebpackPlugin({
-      filename: "app.html",
-      title: "My App",
-      meta: { viewport: "width=device-width, initial-scale=1" },
-    }),
-  ],
-};
-```
-
-After:
-
-```js
-module.exports = {
-  output: {
-    html: { title: "My App", meta: { viewport: "width=device-width, initial-scale=1" } },
-    htmlFilename: "app.html",
-  },
-  experiments: {
-    html: true,
-  },
-  entry: "./src/index.js",
-};
+```diff
+-const HtmlWebpackPlugin = require("html-webpack-plugin");
+-
+ module.exports = {
++  output: {
++    html: { title: "My App", meta: { viewport: "width=device-width, initial-scale=1" } },
++    htmlFilename: "app.html",
++  },
++  experiments: {
++    html: true,
++  },
+   entry: "./src/index.js",
+-  plugins: [
+-    new HtmlWebpackPlugin({
+-      filename: "app.html",
+-      title: "My App",
+-      meta: { viewport: "width=device-width, initial-scale=1" },
+-    }),
+-  ],
+ };
 ```
 
 With a `template`, the template becomes the entry point and gets a `<script>` tag for the previous entry added to it:
 
-```js
-module.exports = {
-  experiments: {
-    html: true,
-  },
-  // The template is now the entry: it must load the previous entry via <!-- webpackChunkName: "main" --> <script defer src="./index.js"></script> (added by the HTML workflow step when the template is included)
-  entry: "./src/index.html",
-  output: {
-    htmlFilename: "index.html",
-  },
-};
+```diff
+-const HtmlWebpackPlugin = require("html-webpack-plugin");
+-
+ module.exports = {
+-  entry: "./src/index.js",
+-  plugins: [new HtmlWebpackPlugin({ template: "./src/index.html" })],
++  experiments: {
++    html: true,
++  },
++  // The template is now the entry: it must load the previous entry via <!-- webpackChunkName: "main" --> <script defer src="./index.js"></script> (added by the HTML workflow step when the template is included)
++  entry: "./src/index.html",
++  output: {
++    htmlFilename: "index.html",
++  },
+ };
 ```
 
 After migration, the codemod removes unused `html-webpack-plugin`, `html-loader`, and supported companion plugins from `dependencies` and `devDependencies`. The configuration step records remaining package references in workflow state, scoped by source filename. The JSON transform combines those references with other manifest fields, preserving packages still referenced beneath that manifest by skipped configs or other tooling. Running the JSON transform alone keeps dependencies because no source-reference scan is available. Run your package manager afterward to update the lockfile.
