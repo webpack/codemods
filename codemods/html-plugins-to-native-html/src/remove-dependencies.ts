@@ -3,7 +3,8 @@ import type Json from "@codemod.com/jssg-types/langs/json";
 import type { SgNode, SgRoot } from "@codemod.com/jssg-types/main";
 import { ConfigEditor, findPair, keyName, namedChildren, pairsOf } from "@webpack/codemod-utils";
 
-import { HTML_PACKAGES, remainingPackages } from "./migration-state";
+import { remainingPackages } from "./migration-state";
+import { HTML_PACKAGES, manifestPackageReferences } from "./package-references";
 
 const REMOVED_PACKAGES = new Set(HTML_PACKAGES);
 const DEPENDENCY_KEYS = ["dependencies", "devDependencies"];
@@ -31,10 +32,14 @@ export function removeUnusedDependencies(
       continue;
     }
 
-    for (const name of REMOVED_PACKAGES) {
-      if (pair.text().includes(name)) {
-        remaining.add(name);
-      }
+    const value = pair.field("value");
+
+    if (!value) {
+      continue;
+    }
+
+    for (const name of manifestPackageReferences(value, keyName(pair) === "scripts")) {
+      remaining.add(name);
     }
   }
 

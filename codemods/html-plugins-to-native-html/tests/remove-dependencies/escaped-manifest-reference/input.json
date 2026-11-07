@@ -1,0 +1,4 @@
+{
+  "scripts": { "inspect": "node -p 'require.resolve(\"html\u002dloader\")'" },
+  "devDependencies": { "html-loader": "^5.1.0", "html-webpack-plugin": "^5.6.0" }
+}

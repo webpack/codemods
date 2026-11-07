@@ -56,6 +56,17 @@ test("workflow applies HTML and dependency edits through the runner, without fs 
       assert.deepEqual(readFileSync(path.join(target, relative)), readFileSync(path.join(fixture, relative)));
     }
     assert.equal(migrated.devDependencies["favicons-webpack-plugin"], undefined);
+    for (const name of ["dynamic-reference", "inline-loader"]) {
+      const relative = `packages/${name}/package.json`;
+      assert.deepEqual(readFileSync(path.join(target, relative)), readFileSync(path.join(fixture, relative)),
+        `AST reference scan removed a used package from ${name}`);
+    }
+    const referenceManifest = "packages/references/package.json";
+    const expectedReferences = JSON.parse(readFileSync(path.join(fixture, referenceManifest), "utf8"));
+    delete expectedReferences.devDependencies["webpack-subresource-integrity"];
+    assert.deepEqual(JSON.parse(readFileSync(path.join(target, referenceManifest), "utf8")), expectedReferences);
+    const dynamicLiteral = JSON.parse(readFileSync(path.join(target, "packages/dynamic-literal/package.json"), "utf8"));
+    assert.deepEqual(dynamicLiteral.devDependencies, { "webpack-subresource-integrity": "^5.2.0" });
     const faviconConfig = readFileSync(path.join(target, "packages/migrated/webpack.config.cjs"), "utf8");
     assert.match(faviconConfig, /favicon: "\.\/logo.png"/);
     assert.match(faviconConfig, /generate the required icon sizes\/formats and web app manifest manually/);

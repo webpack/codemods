@@ -9,14 +9,6 @@ export interface TemplateScript {
   chunkName?: string;
 }
 
-export const HTML_PACKAGES = [
-  "html-webpack-plugin",
-  "html-loader",
-  "csp-html-webpack-plugin",
-  "webpack-subresource-integrity",
-  "favicons-webpack-plugin",
-];
-
 // Use one spelling for filenames from the JS, HTML and JSON parsers, including
 // Windows filenames. Resolving these paths never opens or writes a file.
 export function normalizeFilename(filename: string): string {
@@ -47,13 +39,13 @@ export function directoryOf(filename: string): string {
   return slash < 0 ? "." : normalized.slice(0, slash);
 }
 
-export function recordSource(filename: string, source: string): void {
+export function recordSource(filename: string, references: string[]): void {
   const release = acquireLock(SOURCES_KEY);
 
   try {
     const sources = getState<Record<string, string[]>>(SOURCES_KEY) ?? {};
 
-    sources[normalizeFilename(filename)] = HTML_PACKAGES.filter((name) => source.includes(name));
+    sources[normalizeFilename(filename)] = references;
     setState(SOURCES_KEY, sources);
   } finally {
     release();

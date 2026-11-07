@@ -144,3 +144,7 @@ With a `template`, the template becomes the entry point and gets a `<script>` ta
 ```
 
 After migration, the codemod removes unused `html-webpack-plugin`, `html-loader`, and supported companion plugins from `dependencies` and `devDependencies`. The configuration step records remaining package references in workflow state, scoped by source filename. The JSON transform combines those references with other manifest fields, preserving packages still referenced beneath that manifest by skipped configs or other tooling. Running the JSON transform alone keeps dependencies because no source-reference scan is available. Run your package manager afterward to update the lockfile.
+
+Reference detection walks the migrated AST and reads literal module requests, including escaped strings, static concatenations, package subpaths and inline loader chains. Comments and incidental mentions in prose do not keep an unused dependency. Dynamic imports/resolvers and syntax errors keep the HTML packages for manual review. Manifest fields are inspected through their JSON nodes; npm scripts retain conservative checks on their decoded shell commands.
+
+Syntax checks for callbacks, parser-option conflicts and HTML tags also use AST nodes. Text handling remains for literal values, paths, escaping, whitespace preservation and webpack directives inside comments, whose contents are not parsed by the HTML grammar.

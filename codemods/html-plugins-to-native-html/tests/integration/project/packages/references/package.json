@@ -1,0 +1,9 @@
+{
+  "devDependencies": {
+    "html-loader": "^5.1.0",
+    "html-webpack-plugin": "^5.6.0",
+    "csp-html-webpack-plugin": "^5.1.0",
+    "webpack-subresource-integrity": "^5.2.0",
+    "favicons-webpack-plugin": "^6.0.0"
+  }
+}
