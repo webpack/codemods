@@ -15,6 +15,7 @@ import type { ModuleBinding } from "./imports";
 
 export * from "./ast";
 export * from "./imports";
+export * from "./syntax";
 
 // ---------- webpack config helpers ----------
 

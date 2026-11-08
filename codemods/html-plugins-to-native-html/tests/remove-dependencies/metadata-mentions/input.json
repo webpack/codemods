@@ -1,0 +1,4 @@
+{
+  "description": "Migrated from html-loader and html-webpack-plugin",
+  "devDependencies": { "html-loader": "^5.1.0", "html-webpack-plugin": "^5.6.0" }
+}

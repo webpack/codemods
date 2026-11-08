@@ -1,0 +1,6 @@
+{
+  "devDependencies": {
+    "webpack-subresource-integrity": "^5.2.0",
+    "html-loader": "^5.1.0"
+  }
+}
