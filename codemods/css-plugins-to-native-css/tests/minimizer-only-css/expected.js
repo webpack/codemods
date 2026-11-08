@@ -1,0 +1,1 @@
+module.exports = { mode: "development", optimization: { minimizeOptions: { javascript: false, html: false, json: false, xml: false, css: { comments: /^!/, extractComments: false } }, minimize: false, minimizer: ["..."] } };

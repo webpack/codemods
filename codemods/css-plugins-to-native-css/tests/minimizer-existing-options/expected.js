@@ -1,0 +1,1 @@
+module.exports = { optimization: { minimizeOptions: { javascript: { compress: false }, css: { comments: /^!/, extractComments: false, mergeDistantRules: false, mergeRules: false } }, minimizer: ["..."] } };
