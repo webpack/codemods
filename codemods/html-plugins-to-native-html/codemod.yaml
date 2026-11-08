@@ -1,6 +1,6 @@
 schema_version: "1.0"
 name: "@webpack/html-plugins-to-native-html"
-version: "0.0.0"
+version: "1.0.0"
 description: Migrate html-webpack-plugin and html-loader to webpack's native HTML support and minification
 author: bjohansebas (Sebastian Beltran)
 license: MIT
