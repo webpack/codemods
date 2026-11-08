@@ -1,8 +1,10 @@
 # @webpack/css-plugins-to-native-css
 
-Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader`/`css-loader` rules to webpack's [native CSS support](https://webpack.js.org/configuration/experiments/#experimentscss) (`experiments.css`).
+Migrates webpack configurations from `mini-css-extract-plugin`, `style-loader`/`css-loader` rules, and supported `css-minimizer-webpack-plugin` options to webpack's [native CSS support](https://webpack.js.org/configuration/experiments/#experimentscss) (`experiments.css`) and minification.
 
 > Requires **webpack >= 5.109.0**: the transform relies on the `experiments.css: "auto"` default introduced there, which enables native CSS whenever no user rule matches `.css` files.
+
+> Migrating `css-minimizer-webpack-plugin` requires **webpack >= 5.112.0** for the native minifier options, including comment extraction control.
 
 ## What it does
 
@@ -11,6 +13,7 @@ Migrates webpack configurations from `mini-css-extract-plugin` and `style-loader
 - Any other loader in the chain (`sass-loader`, `less-loader`, `postcss-loader`, custom ones, …) keeps working in front of native CSS: it stays in `use` while the injection/extraction loaders are dropped, and the rule gets `type: "css/auto"`.
 - Removes `new MiniCssExtractPlugin(...)` from `plugins` (and the whole `plugins` entry when it becomes empty), migrating its options to their native counterparts: `filename` → `output.cssFilename`, `chunkFilename` → `output.cssChunkFilename`.
 - Removes the `mini-css-extract-plugin` `require`/`import` once it is unused.
+- Migrates supported `css-minimizer-webpack-plugin` configurations to `optimization.minimizeOptions.css`, translating cssnano's default preset options and removing the unused plugin import. Existing native options are merged only when they do not conflict. The build's `mode` and `optimization.minimize` switch are preserved.
 - Migrates `MiniCssExtractPlugin.getCompilationHooks(...)` taps to the native runtime's `webpack.web.CssLoadingRuntimeModule.getCompilationHooks(...)`: `linkPreload`/`linkPrefetch` keep their name and signature, and `beforeTagInsert` maps to `linkInsert` — note its callback now receives `(source, chunk)` instead of `(source, varNames)`, so review taps that used the second argument.
 - Understands conditional patterns (including ejected Create React App configs): the `isDev ? "style-loader" : MiniCssExtractPlugin.loader` ternary, `isEnvDevelopment && "style-loader"` guards, `require.resolve("css-loader")`, and `[...].filter(Boolean)` around `use` and `plugins`. Function-form configs (`module.exports = (env) => ({...})`) and `webpack-merge` fragments work too.
 - Loader options are translated while migrating. `importLoaders`, `esModule`, and `sourceMap: true` are dropped silently (native CSS covers them). css-loader's boolean `url`/`import` become the rule's `parser: { url, import }`, `sourceMap: false` turns any non-array `devtool` into its per-asset-type form (`[{ type: "javascript", use: … }, { type: "css", use: false }]`), and on `.module.css`-scoped rules the `modules` sub-options map too: `localIdentName`/`exportOnlyLocals`/`exportLocalsConvention` → `generator`, `namedExport` → `parser.namedExports`. More translations: `exportType: "css-style-sheet"`/`"string"` → `parser.exportType`, the extract loader's `emit: false` (SSR) → `generator: { exportsOnly: true }`, `modules.mode` → `type: "css/global"` for `"global"` / `parser: { pure: true }` for `"pure"`, style-loader's `attributes.crossorigin` → `output.crossOriginLoading`, and the extract loader's `layer` → the rule-level `layer` (enabling `experiments.layers`). A flagged `attributes.nonce` migrates manually: set the `__webpack_nonce__` runtime global, or `output.html.csp.nonce` when webpack emits your HTML. Options native CSS cannot replicate — `modules.getLocalIdent`, style-loader's `insert`/`attributes`, non-literal values, or `modules` on a rule that also matches plain `.css` files — are dropped with a `// Removed loader options without a native CSS equivalent: …` comment so you can review the behavior change.
@@ -89,3 +92,76 @@ module.exports = {
 ```
 
 The codemod also removes `mini-css-extract-plugin`, `style-loader`, and `css-loader` from your `package.json` (`dependencies` and `devDependencies`). If other tooling in the repo still uses them (Storybook, test setups, …), reinstall the ones you need.
+
+## Minifier options
+
+The [cssnano default preset](https://cssnano.github.io/cssnano/docs/presets/) uses different option names from [webpack's native CSS minifier](https://webpack.js.org/configuration/optimization/#optimizationminimizecss). The codemod translates supported literal options instead of copying the cssnano object unchanged.
+
+Before:
+
+```js
+const CssMinimizerPlugin = require("css-minimizer-webpack-plugin");
+
+module.exports = {
+  optimization: {
+    minimizer: [
+      "...",
+      new CssMinimizerPlugin({
+        minimizerOptions: {
+          preset: ["default", {
+            discardComments: { removeAll: true },
+            colormin: false,
+            mergeLonghand: false,
+          }],
+        },
+      }),
+    ],
+  },
+};
+```
+
+After:
+
+```js
+module.exports = {
+  optimization: {
+    minimizeOptions: {
+      css: {
+        comments: false,
+        extractComments: false,
+        shortenColors: false,
+        mergeLonghands: false,
+      },
+    },
+    minimizer: ["..."],
+  },
+};
+```
+
+Supported preset options:
+
+| cssnano option | Native CSS option |
+| --- | --- |
+| `discardComments: false` | `comments: true` |
+| `discardComments: { removeAll: true }` | `comments: false` |
+| Default comment handling | `comments: /^!/`, keeping `/*!` comments in the stylesheet |
+| `colormin` | `shortenColors` |
+| `mergeLonghand` | `mergeLonghands` |
+| `mergeRules` | `mergeRules`; disabling it also disables `mergeDistantRules` |
+| `discardDuplicates`, `discardEmpty`, `discardOverridden` | `removeDeadRules` |
+| `normalizeString`, `normalizeUrl` | `normalizeQuotes` |
+| `calc`, `minifyGradients`, `reduceTransforms`, `normalizeTimingFunctions` | `reduceFunctions` |
+| `minifySelectors`, `uniqueSelectors` | `shortenSelectors` |
+| `minifyParams` | `shortenMediaQueries` |
+| `reduceInitial`, `minifyFontValues`, `orderedValues`, `normalizeDisplayValues`, `normalizePositions`, `normalizeRepeatStyle` | `shortenValues` |
+| `cssDeclarationSorter` | `reorderDeclarations` |
+| `convertValues` | `shortenNumbers`; `{ length: true/false }` sets `convertLengthUnits` |
+| `merge` | `mergeLonghands`, `mergeRules`, `removeDeadRules`; `{ rules: false }` disables rule merging only |
+
+Transform toggles accept booleans, empty objects, and `{ exclude: true/false }`. A native switch can cover several cssnano passes: disabling any of them disables the whole native group, so the migrated build may perform fewer optimizations. Comment extraction is disabled to keep cssnano's comments in the stylesheet.
+
+When the original `minimizer` array has no `"..."`, the migrated CSS plugin is replaced with `"..."` and the native JavaScript, HTML, JSON, and XML minimizers are disabled. Other custom minimizers stay in their original order. Existing `minimizeOptions` takes precedence over the object shorthand in `minimize`, following webpack's normalization.
+
+Unsupported settings keep the original plugin and all its options: custom engines or presets, callbacks, asset filters, worker limits, dynamic/spread options, multiple CSS minimizers, conditional minimizers, and conflicting native options. Nested settings without an equivalent, such as `calc.precision`, or disabling whitespace normalization also require manual migration. An explicit `minimizerOptions` object without a preset is retained because cssnano can load an external configuration.
+
+The `css-minimizer-webpack-plugin` package dependency is retained because other files or unsupported configurations may still use it. Remove it after reviewing the remaining uses in your project.

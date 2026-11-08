@@ -20,7 +20,7 @@ npx codemod run @webpack/<codemod-name>
 
 | Codemod                                                                        | Description                                                                                                    |
 | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| [`css-plugins-to-native-css`](codemods/css-plugins-to-native-css)               | Migrate `mini-css-extract-plugin` and `style-loader`/`css-loader` rules to webpack's native CSS support (`experiments.css`). |
+| [`css-plugins-to-native-css`](codemods/css-plugins-to-native-css)               | Migrate `mini-css-extract-plugin`, `style-loader`/`css-loader` rules, and supported `css-minimizer-webpack-plugin` options to webpack's native CSS support and minification. |
 | [`html-plugins-to-native-html`](codemods/html-plugins-to-native-html)           | Migrate `html-webpack-plugin` and `html-loader` to native HTML support and minification.                 |
 
 ## Contributing

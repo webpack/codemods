@@ -1,0 +1,1 @@
+module.exports = { optimization: { minimizeOptions: { css: { comments: /^!/, extractComments: false, reduceFunctions: false, removeDeadRules: false, shortenNumbers: false, convertLengthUnits: false, mergeRules: false, mergeDistantRules: false } }, minimizer: ["..."] } };

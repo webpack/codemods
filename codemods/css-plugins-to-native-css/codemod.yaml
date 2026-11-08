@@ -1,7 +1,7 @@
 schema_version: "1.0"
 name: "@webpack/css-plugins-to-native-css"
 version: "1.0.0"
-description: Migrate mini-css-extract-plugin and style-loader/css-loader rules to webpack's native CSS support (experiments.css)
+description: Migrate CSS plugins, loaders, and supported css-minimizer-webpack-plugin options to webpack's native CSS support and minification
 author: bjohansebas (Sebastian Beltran)
 license: MIT
 workflow: workflow.yaml

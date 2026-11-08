@@ -20,6 +20,8 @@ import {
   unwrapFilterCall,
 } from "@webpack/codemod-utils";
 
+import { migrateMinimizers } from "./minification";
+
 const PLUGIN_MODULE = "mini-css-extract-plugin";
 const REMOVABLE_LOADERS = new Set(["style-loader", "css-loader"]);
 const EXTRACT_LOADER_NAME = "MiniCssExtractPlugin.loader";
@@ -145,9 +147,12 @@ class CssMigration {
     this.transformPlugins(pluginsPairs);
     this.migrateCompilationHooks();
     this.planConfigInsertions();
+
+    const minimizerBindings = migrateMinimizers(this.editor);
+
     this.editor.finalizeRemovals();
     if (!this.editor.hasEdits) return null;
-    for (const binding of this.pluginBindings) {
+    for (const binding of [...this.pluginBindings, ...minimizerBindings]) {
       if (this.repurposedStatements.has(binding.statement.range().start.index)) continue;
       this.editor.removeBindingIfUnused(binding);
     }

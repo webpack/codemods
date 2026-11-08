@@ -9,7 +9,7 @@ nodes:
     runtime:
       type: direct
     steps:
-      - name: Migrate mini-css-extract-plugin and style-loader/css-loader rules to webpack's native CSS support (experiments.css)
+      - name: Migrate CSS plugins, loaders, and supported css-minimizer-webpack-plugin options to webpack's native CSS support and minification
         js-ast-grep:
           js_file: src/workflow.ts
           base_path: .
@@ -25,6 +25,7 @@ nodes:
           exclude:
             - "**/node_modules/**"
           language: typescript
+          semantic_analysis: file
       - name: Remove mini-css-extract-plugin, style-loader, and css-loader from package.json
         js-ast-grep:
           js_file: src/remove-dependencies.ts
